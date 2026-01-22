@@ -45,14 +45,20 @@ class WasserVibrationOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             # Reset-Checkbox pruefen
             do_reset = user_input.pop("reset_learning", False)
-            if do_reset:
-                user_input["learn_count"] = 0
-                for i in range(5):
-                    user_input[f"bucket_{i}"] = 0.1
-                    user_input[f"bucket_{i}_count"] = 0
-                    user_input[f"bucket_{i}_time"] = 0.0
 
-            return self.async_create_entry(title="", data=user_input)
+            # WICHTIG: Bestehende Optionen mit neuen mergen (nicht ersetzen!)
+            # Sonst gehen gelernte Bucket-Daten verloren!
+            merged = dict(self.config_entry.options)
+            merged.update(user_input)
+
+            if do_reset:
+                merged["learn_count"] = 0
+                for i in range(5):
+                    merged[f"bucket_{i}"] = 0.1
+                    merged[f"bucket_{i}_count"] = 0
+                    merged[f"bucket_{i}_time"] = 0.0
+
+            return self.async_create_entry(title="", data=merged)
 
         # Aktuelle Werte holen
         current_threshold = self.config_entry.options.get(
