@@ -533,30 +533,46 @@ class WasserVibrationController:
                     pass
 
     async def async_stop(self):
-        if self._remove_vibration_listener:
-            self._remove_vibration_listener()
-        if self._remove_total_listener:
-            self._remove_total_listener()
+        try:
+            if self._remove_vibration_listener:
+                self._remove_vibration_listener()
+        except Exception as e:
+            _LOGGER.warning("Error removing vibration listener: %s", e)
+        try:
+            if self._remove_total_listener:
+                self._remove_total_listener()
+        except Exception as e:
+            _LOGGER.warning("Error removing total listener: %s", e)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
-    ctrl = WasserVibrationController(hass, entry)
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {DATA_CTRL: ctrl}
+    try:
+        ctrl = WasserVibrationController(hass, entry)
+        hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {DATA_CTRL: ctrl}
 
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    await ctrl.async_start()
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        await ctrl.async_start()
 
-    entry.add_update_listener(_async_update_listener)
-    return True
+        entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+        return True
+    except Exception as e:
+        _LOGGER.exception("Error setting up entry: %s", e)
+        return False
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if unload_ok:
-        ctrl = hass.data[DOMAIN][entry.entry_id][DATA_CTRL]
-        await ctrl.async_stop()
-        hass.data[DOMAIN].pop(entry.entry_id)
-    return unload_ok
+    try:
+        unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+        if unload_ok:
+            if entry.entry_id in hass.data.get(DOMAIN, {}):
+                ctrl = hass.data[DOMAIN][entry.entry_id].get(DATA_CTRL)
+                if ctrl:
+                    await ctrl.async_stop()
+                hass.data[DOMAIN].pop(entry.entry_id, None)
+        return unload_ok
+    except Exception as e:
+        _LOGGER.exception("Error unloading entry: %s", e)
+        return False
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry):
