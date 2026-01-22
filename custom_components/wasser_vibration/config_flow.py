@@ -6,7 +6,7 @@ from homeassistant.helpers import selector
 
 from .const import (
     DOMAIN, CONF_NAME, CONF_VIBRATION_ENTITY, CONF_TOTAL_ENTITY, CONF_TOTAL_UNIT,
-    CONF_STD_THRESHOLD, CONF_MAX_RES_L, CONF_RESET_LEARNING,
+    CONF_STD_THRESHOLD, CONF_MAX_RES_L,
     DEFAULT_NAME, DEFAULT_STD_THRESHOLD, DEFAULT_MAX_RES_L, DEFAULT_TOTAL_UNIT,
     RANGE_STD, RANGE_MAX_RES,
 )
@@ -35,28 +35,26 @@ class WasserVibrationConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     def async_get_options_flow(config_entry):
-        return WasserVibrationOptionsFlow(config_entry)
+        return WasserVibrationOptionsFlow()
 
 
 class WasserVibrationOptionsFlow(config_entries.OptionsFlow):
-    def __init__(self, config_entry):
-        self.config_entry = config_entry
+    """Minimal Options Flow - ohne config_entry im __init__."""
 
     async def async_step_init(self, user_input=None):
         if user_input is not None:
-            # Reset-Flag nicht in options speichern, nur auswerten
-            do_reset = user_input.pop(CONF_RESET_LEARNING, False)
+            # Reset-Checkbox pruefen
+            do_reset = user_input.pop("reset_learning", False)
             if do_reset:
-                # Alle Bucket-Daten entfernen
                 user_input["learn_count"] = 0
                 for i in range(5):
-                    user_input[f"bucket_{i}"] = 0.1  # Default factor
+                    user_input[f"bucket_{i}"] = 0.1
                     user_input[f"bucket_{i}_count"] = 0
                     user_input[f"bucket_{i}_time"] = 0.0
 
             return self.async_create_entry(title="", data=user_input)
 
-        # Aktuelle Werte aus options holen (mit defaults)
+        # Aktuelle Werte holen
         current_threshold = self.config_entry.options.get(
             CONF_STD_THRESHOLD, DEFAULT_STD_THRESHOLD
         )
@@ -64,28 +62,25 @@ class WasserVibrationOptionsFlow(config_entries.OptionsFlow):
             CONF_MAX_RES_L, DEFAULT_MAX_RES_L
         )
 
-        # Schema mit NumberSelector - vol.Required damit sie angezeigt werden
-        schema_dict = {
-            vol.Required(CONF_STD_THRESHOLD, default=current_threshold): selector.NumberSelector(
-                selector.NumberSelectorConfig(
-                    min=RANGE_STD["min"],
-                    max=RANGE_STD["max"],
-                    step=RANGE_STD["step"],
-                    mode=selector.NumberSelectorMode.BOX,
-                )
-            ),
-            vol.Required(CONF_MAX_RES_L, default=current_max_res): selector.NumberSelector(
-                selector.NumberSelectorConfig(
-                    min=RANGE_MAX_RES["min"],
-                    max=RANGE_MAX_RES["max"],
-                    step=RANGE_MAX_RES["step"],
-                    mode=selector.NumberSelectorMode.BOX,
-                )
-            ),
-            vol.Optional(CONF_RESET_LEARNING, default=False): selector.BooleanSelector(),
-        }
-
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema(schema_dict),
+            data_schema=vol.Schema({
+                vol.Required(CONF_STD_THRESHOLD, default=current_threshold): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=RANGE_STD["min"],
+                        max=RANGE_STD["max"],
+                        step=RANGE_STD["step"],
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Required(CONF_MAX_RES_L, default=current_max_res): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=RANGE_MAX_RES["min"],
+                        max=RANGE_MAX_RES["max"],
+                        step=RANGE_MAX_RES["step"],
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Optional("reset_learning", default=False): selector.BooleanSelector(),
+            }),
         )
