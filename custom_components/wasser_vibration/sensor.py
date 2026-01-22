@@ -17,15 +17,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     entities = [
         # Haupt-Sensoren
         FlowSensor(ctrl, name),
-        VolumeSensor(ctrl, name),
-        TotalSensor(ctrl, name),  # NEU: Kumuliertes Gesamt-Volumen
+        TotalSensor(ctrl, name),
         ResiduumSensor(ctrl, name),
         FlowStatusSensor(ctrl, name),
-        # Auto-Learning Status
-        AutoLearnSensor(ctrl, name),
         # Diagnose
+        AutoLearnSensor(ctrl, name),
+        BucketInfoSensor(ctrl, name),  # NEU: Zeigt aktuellen Bucket + Faktoren
         DiagVibrationStd(ctrl, name),
         DiagHydrusTotal(ctrl, name),
+        DiagVolumeSensor(ctrl, name),  # Volume jetzt in Diagnose
     ]
 
     async_add_entities(entities)
@@ -78,83 +78,42 @@ class FlowSensor(BaseEntity):
         return None if val is None else round(val, 2)
 
 
-class VolumeSensor(BaseEntity, RestoreEntity):
-    """Kumuliertes Volumen."""
+class TotalSensor(BaseEntity, RestoreEntity):
+    """Kumuliertes Gesamt-Volumen (fuer Energy Dashboard)."""
     def __init__(self, ctrl, name: str):
         super().__init__(
-            ctrl, name, "Volume",
+            ctrl, name, "Total",
             unit="L",
             icon="mdi:water",
             state_class=SensorStateClass.TOTAL_INCREASING,
             device_class=SensorDeviceClass.WATER,
         )
-
-    async def async_added_to_hass(self):
-        await super().async_added_to_hass()
-
-        last_state = await self.async_get_last_state()
-        if last_state and last_state.state not in ("unknown", "unavailable"):
-            try:
-                last_val = float(last_state.state)
-                self.ctrl._volume_l = last_val
-                if self.ctrl._offset_l == 0.0 or self.ctrl._offset_l > self.ctrl._volume_l:
-                    self.ctrl._offset_l = self.ctrl._volume_l
-                setattr(self.ctrl, "_restored_volume", True)
-            except (ValueError, TypeError):
-                pass
-
-        self.async_write_ha_state()
-
-    @property
-    def native_value(self) -> float | None:
-        val = self.ctrl.volume_l
-        return None if val is None else round(val, 2)
-
-    @property
-    def extra_state_attributes(self):
-        return {
-            "offset_l": round(self.ctrl.offset_l, 2),
-            "volume_since_tick": round(self.ctrl.volume_since_tick, 2),
-        }
-
-
-class TotalSensor(BaseEntity, RestoreEntity):
-    """Kumuliertes Gesamt-Volumen (persistent)."""
-    def __init__(self, ctrl, name: str):
-        super().__init__(
-            ctrl, name, "Total",
-            unit="L",
-            icon="mdi:water-sync",
-            state_class=SensorStateClass.TOTAL_INCREASING,
-            device_class=SensorDeviceClass.WATER,
-        )
-        self._total_volume = 0.0
+        self._base_total = 0.0
 
     async def async_added_to_hass(self):
         await super().async_added_to_hass()
         last_state = await self.async_get_last_state()
         if last_state and last_state.state not in ("unknown", "unavailable"):
             try:
-                self._total_volume = float(last_state.state)
+                self._base_total = float(last_state.state)
             except (ValueError, TypeError):
                 pass
         self.async_write_ha_state()
 
     @property
     def native_value(self) -> float | None:
-        # Gesamt = persistierter Wert + aktuelle Session
-        return round(self._total_volume + self.ctrl.volume_l, 2)
+        return round(self._base_total + self.ctrl.volume_l, 2)
 
     @property
     def extra_state_attributes(self):
         return {
-            "session_volume_l": round(self.ctrl.volume_l, 2),
+            "seit_neustart_l": round(self.ctrl.volume_l, 2),
             "learn_count": self.ctrl.learn_count,
         }
 
 
 class ResiduumSensor(BaseEntity):
-    """Residuum = Volume - Offset."""
+    """Geschaetztes Volumen seit letztem 10L-Tick (0-10L)."""
     def __init__(self, ctrl, name: str):
         super().__init__(
             ctrl, name, "Residuum",
@@ -170,9 +129,8 @@ class ResiduumSensor(BaseEntity):
     @property
     def extra_state_attributes(self):
         return {
-            "offset_l": round(self.ctrl.offset_l, 2),
-            "max_residuum_l": round(self.ctrl.max_res_l, 2),
             "volume_since_tick": round(self.ctrl.volume_since_tick, 2),
+            "max_residuum_l": round(self.ctrl.max_res_l, 2),
         }
 
 
@@ -215,10 +173,10 @@ class FlowStatusSensor(BaseEntity):
         }
 
 
-# --- Auto-Learning Status -----------------------------------------------------
+# --- Diagnose-Sensoren --------------------------------------------------------
 
 class AutoLearnSensor(BaseEntity):
-    """Zeigt Auto-Learning Status mit Multi-Punkt Lernen."""
+    """Zeigt Auto-Learning Status."""
     def __init__(self, ctrl, name: str):
         super().__init__(
             ctrl, name, "Auto-Learn",
@@ -230,7 +188,7 @@ class AutoLearnSensor(BaseEntity):
     def native_value(self) -> str:
         count = self.ctrl.learn_count
         if count == 0:
-            return "Lerne..."
+            return "Warte auf 10L-Tick..."
         else:
             return f"{count}x gelernt"
 
@@ -245,29 +203,60 @@ class AutoLearnSensor(BaseEntity):
 
     @property
     def extra_state_attributes(self):
-        # Bucket-Infos detailliert aufbereiten
-        bucket_details = {}
-        all_buckets = self.ctrl.get_all_bucket_info()
-
-        for info in all_buckets:
-            label = info["label"]
-            bucket_details[f"{label}_factor"] = round(info["factor"], 3)
-            bucket_details[f"{label}_count"] = info["count"]
-            bucket_details[f"{label}_zeit_min"] = round(info["time_s"] / 60.0, 1)
-            bucket_details[f"{label}_schwelle"] = round(info["abs_threshold"], 4)
-
         attrs = {
             "learn_count": self.ctrl.learn_count,
-            "current_bucket": self.ctrl.current_bucket_label,
             "threshold": self.ctrl.std_threshold,
             "is_calibrated": self.ctrl.is_calibrated,
-            "info": "Buckets: schwach -> stark (relativ zur Schwelle)",
+            "info": "Lernt bei jedem 10L Hydrus-Tick automatisch",
         }
-        attrs.update(bucket_details)
         return attrs
 
 
-# --- Diagnose-Sensoren --------------------------------------------------------
+class BucketInfoSensor(BaseEntity):
+    """Zeigt aktuellen Lern-Bucket und alle Faktoren."""
+    def __init__(self, ctrl, name: str):
+        super().__init__(
+            ctrl, name, "Bucket Info",
+            icon="mdi:format-list-bulleted",
+            entity_category=EntityCategory.DIAGNOSTIC,
+        )
+
+    @property
+    def native_value(self) -> str:
+        bucket = self.ctrl.current_bucket_label
+        if bucket == "Kein Wasser":
+            return "Kein Wasser"
+        return f"Aktuell: {bucket}"
+
+    @property
+    def icon(self) -> str:
+        bucket = self.ctrl.current_bucket_label
+        if bucket == "Kein Wasser":
+            return "mdi:water-off"
+        elif "schwach" in bucket:
+            return "mdi:speedometer-slow"
+        elif "stark" in bucket:
+            return "mdi:speedometer"
+        else:
+            return "mdi:speedometer-medium"
+
+    @property
+    def extra_state_attributes(self):
+        # Alle Bucket-Infos aufbereiten
+        all_buckets = self.ctrl.get_all_bucket_info()
+        attrs = {
+            "threshold": self.ctrl.std_threshold,
+            "current": self.ctrl.current_bucket_label,
+        }
+
+        for info in all_buckets:
+            label = info["label"]
+            # Kompakte Info pro Bucket
+            attrs[f"{label}"] = f"F={info['factor']:.2f} | {info['count']}x | {info['time_s']/60:.1f}min | ab {info['abs_threshold']:.4f}"
+
+        attrs["legende"] = "F=Faktor | Anzahl Lern-Zyklen | Zeit aktiv | Schwelle"
+        return attrs
+
 
 class DiagVibrationStd(BaseEntity):
     """Aktuelle Vibrations-Standardabweichung."""
@@ -295,6 +284,7 @@ class DiagVibrationStd(BaseEntity):
             "raw_std": round(raw, 4),
             "threshold": threshold,
             "above_threshold": std > threshold,
+            "delta_to_threshold": round(std - threshold, 4),
             "outliers_rejected": self.ctrl.outliers_rejected,
         }
 
@@ -322,18 +312,57 @@ class DiagHydrusTotal(BaseEntity):
         volume = self.ctrl.volume_l
 
         attrs = {
-            "vibration_volume_l": round(volume, 2),
-            "residuum_l": round(self.ctrl.residuum_l, 2),
-            "volume_since_tick": round(self.ctrl.volume_since_tick, 2),
-            "cal_factor": round(self.ctrl.cal_factor, 3),
+            "geschaetzt_l": round(self.ctrl.volume_since_tick, 2),
             "learn_count": self.ctrl.learn_count,
         }
 
         if hydrus is not None:
-            attrs["delta_vibration_vs_hydrus"] = round(volume - hydrus, 2)
+            attrs["differenz_l"] = round(self.ctrl.volume_since_tick - (hydrus % 10), 2)
 
         time_since = self.ctrl.time_since_hydrus_tick
         if time_since < 999999:
-            attrs["minutes_since_tick"] = round(time_since / 60.0, 1)
+            attrs["minuten_seit_tick"] = round(time_since / 60.0, 1)
 
         return attrs
+
+
+class DiagVolumeSensor(BaseEntity, RestoreEntity):
+    """Internes Volumen (wird bei Hydrus-Sync angepasst)."""
+    def __init__(self, ctrl, name: str):
+        super().__init__(
+            ctrl, name, "Volume",
+            unit="L",
+            icon="mdi:water-sync",
+            state_class=SensorStateClass.TOTAL_INCREASING,
+            device_class=SensorDeviceClass.WATER,
+            entity_category=EntityCategory.DIAGNOSTIC,
+        )
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+
+        last_state = await self.async_get_last_state()
+        if last_state and last_state.state not in ("unknown", "unavailable"):
+            try:
+                last_val = float(last_state.state)
+                self.ctrl._volume_l = last_val
+                if self.ctrl._offset_l == 0.0 or self.ctrl._offset_l > self.ctrl._volume_l:
+                    self.ctrl._offset_l = self.ctrl._volume_l
+                setattr(self.ctrl, "_restored_volume", True)
+            except (ValueError, TypeError):
+                pass
+
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> float | None:
+        val = self.ctrl.volume_l
+        return None if val is None else round(val, 2)
+
+    @property
+    def extra_state_attributes(self):
+        return {
+            "offset_l": round(self.ctrl.offset_l, 2),
+            "volume_since_tick": round(self.ctrl.volume_since_tick, 2),
+            "info": "Interner Wert, wird bei Hydrus-Tick synchronisiert",
+        }
