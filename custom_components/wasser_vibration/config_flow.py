@@ -6,10 +6,9 @@ from homeassistant.helpers import selector
 
 from .const import (
     DOMAIN, CONF_NAME, CONF_VIBRATION_ENTITY, CONF_TOTAL_ENTITY, CONF_TOTAL_UNIT,
-    CONF_STD_THRESHOLD, CONF_STD_MAX, CONF_FLOW_MAX, CONF_MAX_RES_L,
-    DEFAULT_NAME, DEFAULT_STD_THRESHOLD, DEFAULT_STD_MAX, DEFAULT_FLOW_MAX,
-    DEFAULT_MAX_RES_L, DEFAULT_TOTAL_UNIT,
-    RANGE_STD, RANGE_FLOW, RANGE_MAX_RES,
+    CONF_STD_THRESHOLD, CONF_MAX_RES_L,
+    DEFAULT_NAME, DEFAULT_STD_THRESHOLD, DEFAULT_MAX_RES_L, DEFAULT_TOTAL_UNIT,
+    RANGE_STD, RANGE_MAX_RES,
 )
 
 
@@ -34,7 +33,7 @@ class WasserVibrationConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             }),
             description_placeholders={
                 "vibration_hint": "Waehle den 'Vibration Y-Std' Sensor vom ESPHome-Geraet",
-                "total_hint": "Optional: Hydrus Wasserzaehler fuer Auto-Reset bei 10L-Tick",
+                "total_hint": "Optional: Hydrus Wasserzaehler fuer Auto-Kalibrierung bei 10L-Tick",
             },
         )
 
@@ -51,7 +50,6 @@ class WasserVibrationOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             # Entity-Aenderungen in data speichern
             new_data = dict(self.config_entry.data)
-            new_options = {}
 
             for key in [CONF_VIBRATION_ENTITY, CONF_TOTAL_ENTITY, CONF_TOTAL_UNIT]:
                 if key in user_input:
@@ -73,8 +71,6 @@ class WasserVibrationOptionsFlow(config_entries.OptionsFlow):
         current_unit = self.config_entry.data.get(CONF_TOTAL_UNIT, DEFAULT_TOTAL_UNIT)
 
         current_threshold = self.config_entry.options.get(CONF_STD_THRESHOLD, DEFAULT_STD_THRESHOLD)
-        current_std_max = self.config_entry.options.get(CONF_STD_MAX, DEFAULT_STD_MAX)
-        current_flow_max = self.config_entry.options.get(CONF_FLOW_MAX, DEFAULT_FLOW_MAX)
         current_max_res = self.config_entry.options.get(CONF_MAX_RES_L, DEFAULT_MAX_RES_L)
 
         schema_dict = {}
@@ -101,7 +97,7 @@ class WasserVibrationOptionsFlow(config_entries.OptionsFlow):
 
         schema_dict[vol.Required(CONF_TOTAL_UNIT, default=current_unit)] = vol.In(["L", "m3"])
 
-        # Kalibrierungs-Optionen
+        # Basis-Optionen (Kalibrierung erfolgt ueber Buttons!)
         schema_dict[vol.Required(CONF_STD_THRESHOLD, default=current_threshold)] = selector.NumberSelector(
             selector.NumberSelectorConfig(
                 min=RANGE_STD["min"],
@@ -109,24 +105,6 @@ class WasserVibrationOptionsFlow(config_entries.OptionsFlow):
                 step=RANGE_STD["step"],
                 mode=selector.NumberSelectorMode.BOX,
                 unit_of_measurement="m/s2",
-            )
-        )
-        schema_dict[vol.Required(CONF_STD_MAX, default=current_std_max)] = selector.NumberSelector(
-            selector.NumberSelectorConfig(
-                min=RANGE_STD["min"],
-                max=RANGE_STD["max"],
-                step=RANGE_STD["step"],
-                mode=selector.NumberSelectorMode.BOX,
-                unit_of_measurement="m/s2",
-            )
-        )
-        schema_dict[vol.Required(CONF_FLOW_MAX, default=current_flow_max)] = selector.NumberSelector(
-            selector.NumberSelectorConfig(
-                min=RANGE_FLOW["min"],
-                max=RANGE_FLOW["max"],
-                step=RANGE_FLOW["step"],
-                mode=selector.NumberSelectorMode.BOX,
-                unit_of_measurement="L/min",
             )
         )
         schema_dict[vol.Required(CONF_MAX_RES_L, default=current_max_res)] = selector.NumberSelector(
@@ -141,5 +119,8 @@ class WasserVibrationOptionsFlow(config_entries.OptionsFlow):
 
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema(schema_dict)
+            data_schema=vol.Schema(schema_dict),
+            description_placeholders={
+                "calibration_hint": "Kalibrierung erfolgt ueber die Buttons im Geraet!",
+            },
         )
