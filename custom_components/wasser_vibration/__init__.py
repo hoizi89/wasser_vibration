@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import time
+import statistics
+from collections import deque
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback, Event
@@ -18,6 +20,10 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Peak-Filter Konfiguration
+STD_HISTORY_SIZE = 10  # 10 Samples = 5 Sekunden bei 500ms Update
+OUTLIER_THRESHOLD = 3.0  # MAD-basierter Ausreisser-Schwellwert
 
 
 def _m3_to_l(v: float) -> float:
@@ -47,16 +53,24 @@ class WasserVibrationController:
 
         # Interne Zustaende
         self._last_ts = None
-        self._last_std = None
+        self._last_std_raw = None  # Roher Wert vom Sensor
+        self._last_std = None  # Gefilterter Wert
         self._last_flow = 0.0
 
         self._volume_l = 0.0
         self._offset_l = 0.0
         self._volume_since_tick = 0.0  # Volume seit letztem Hydrus-Tick
         self._last_hydrus_total = None
+        self._last_hydrus_change_time = None
+
+        # Peak-Filter: Moving Average + Ausreisser-Erkennung
+        self._std_history = deque(maxlen=STD_HISTORY_SIZE)
+        self._outliers_rejected = 0
 
         # Flow-Status
         self._flow_active = False
+        self._flow_start_time = None
+        self._last_flow_time = None
         self._current_liter_mark = 0
 
         # Kalibrierungs-Modus
@@ -66,6 +80,39 @@ class WasserVibrationController:
 
         self._remove_vibration_listener = None
         self._remove_total_listener = None
+
+    def _filter_std(self, raw_std: float) -> float | None:
+        """
+        Filtert Ausreisser mit MAD (Median Absolute Deviation) und
+        glaettet mit Moving Average.
+
+        Returns None wenn Ausreisser erkannt wurde.
+        """
+        self._std_history.append(raw_std)
+
+        # Mindestens 5 Samples fuer zuverlaessige Filterung
+        if len(self._std_history) < 5:
+            return raw_std
+
+        # MAD-basierte Ausreisser-Erkennung
+        median = statistics.median(self._std_history)
+        deviations = [abs(x - median) for x in self._std_history]
+        mad = statistics.median(deviations) or 0.0001
+
+        # Z-Score berechnen
+        z_score = abs(raw_std - median) / (1.4826 * mad)
+
+        if z_score > OUTLIER_THRESHOLD:
+            self._outliers_rejected += 1
+            _LOGGER.debug("Ausreisser: %.4f (z=%.1f), verworfen", raw_std, z_score)
+            return None  # Ausreisser verwerfen
+
+        # Glaettung: Gewichteter Durchschnitt (neuere Werte staerker)
+        weights = list(range(1, len(self._std_history) + 1))
+        weighted_sum = sum(v * w for v, w in zip(self._std_history, weights))
+        smoothed = weighted_sum / sum(weights)
+
+        return smoothed
 
     def _std_to_flow(self, std: float) -> float:
         """Konvertiert Std zu Flow mit 2-Punkt linearer Interpolation + Faktor."""
@@ -249,6 +296,37 @@ class WasserVibrationController:
     def volume_since_tick(self) -> float:
         return self._volume_since_tick
 
+    @property
+    def last_std_raw(self) -> float | None:
+        """Roher Std-Wert vom Sensor (ungefiltert)."""
+        return self._last_std_raw
+
+    @property
+    def outliers_rejected(self) -> int:
+        """Anzahl verworfener Ausreisser."""
+        return self._outliers_rejected
+
+    @property
+    def flow_duration_s(self) -> float:
+        """Dauer des aktuellen Wasserflusses in Sekunden."""
+        if self._flow_start_time is None:
+            return 0.0
+        return time.time() - self._flow_start_time
+
+    @property
+    def idle_time_s(self) -> float:
+        """Zeit seit letztem Wasserfluss in Sekunden."""
+        if self._last_flow_time is None:
+            return 999999.0
+        return time.time() - self._last_flow_time
+
+    @property
+    def time_since_hydrus_tick(self) -> float:
+        """Zeit seit letztem 10L-Tick in Sekunden."""
+        if self._last_hydrus_change_time is None:
+            return 999999.0
+        return time.time() - self._last_hydrus_change_time
+
     def register_entity_listener(self, cb) -> None:
         self.__dict__.setdefault("_entity_listeners", []).append(cb)
 
@@ -287,11 +365,18 @@ class WasserVibrationController:
 
         # Erste Initialisierung
         if self._last_hydrus_total is None:
-            rounded_volume = (now_total_l // 10) * 10
-            self._volume_l = rounded_volume
-            self._offset_l = rounded_volume
-            self._last_hydrus_total = now_total_l
-            self._volume_since_tick = 0.0
+            # Wenn Volume vom Sensor bereits restauriert wurde, NICHT ueberschreiben
+            if getattr(self, "_restored_volume", False):
+                self._last_hydrus_total = now_total_l  # nur Referenz setzen
+                # Offset korrigieren falls noetig
+                if self._offset_l > now_total_l:
+                    self._offset_l = now_total_l
+            else:
+                rounded_volume = (now_total_l // 10) * 10
+                self._volume_l = rounded_volume
+                self._offset_l = rounded_volume
+                self._last_hydrus_total = now_total_l
+                self._volume_since_tick = 0.0
             self._notify_entities()
             return
 
@@ -326,6 +411,7 @@ class WasserVibrationController:
             self._offset_l = now_total_l
             self._volume_l = now_total_l
             self._volume_since_tick = 0.0
+            self._last_hydrus_change_time = time.time()
 
         elif 10.5 < delta_l <= 100.0:
             # Sprung nach Offline
@@ -345,21 +431,42 @@ class WasserVibrationController:
         if not new_state or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             return
         try:
-            std = float(new_state.state)
+            raw_std = float(new_state.state)
         except (ValueError, TypeError):
             return
 
         now_ts = time.time()
-        self._last_std = std
+        self._last_std_raw = raw_std
+
+        # Peak-Filter: Ausreisser erkennen und glaetten
+        filtered_std = self._filter_std(raw_std)
+        if filtered_std is None:
+            # Ausreisser verworfen - nichts tun
+            return
+
+        self._last_std = filtered_std
 
         # Kalibrierungs-Modus: Samples sammeln (nur wenn Wasser fliesst)
-        if self._cal_mode is not None and std > self.std_threshold:
-            self._cal_std_samples.append(std)
+        if self._cal_mode is not None and filtered_std > self.std_threshold:
+            self._cal_std_samples.append(raw_std)  # Rohe Werte fuer Kalibrierung
 
         # Flow berechnen mit 2-Punkt Interpolation
-        flow = self._std_to_flow(std)
+        flow = self._std_to_flow(filtered_std)
         self._last_flow = flow
+
+        # Flow-Status mit Hysterese
+        was_active = self._flow_active
         self._flow_active = flow > 0.1
+
+        if self._flow_active and not was_active:
+            self._flow_start_time = now_ts
+            _LOGGER.debug("Flow gestartet")
+        elif not self._flow_active and was_active:
+            self._flow_start_time = None
+            _LOGGER.debug("Flow beendet")
+
+        if self._flow_active:
+            self._last_flow_time = now_ts
 
         # Volumen integrieren
         if self._last_ts is not None:

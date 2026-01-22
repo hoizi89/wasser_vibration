@@ -15,15 +15,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     name = cfg.get(CONF_NAME, entry.data.get(CONF_NAME, "Wasser Vibration"))
 
     entities = [
+        # Haupt-Sensoren
         FlowSensor(ctrl, name),
         VolumeSensor(ctrl, name),
         ResiduumSensor(ctrl, name),
         LiterMarkSensor(ctrl, name),
         FlowStatusSensor(ctrl, name),
+        # Kalibrierung
         CalibrationStatusSensor(ctrl, name),
         CalibrationInfoSensor(ctrl, name),
+        # Diagnose
         DiagVibrationStd(ctrl, name),
+        DiagVibrationRaw(ctrl, name),
         DiagHydrusTotal(ctrl, name),
+        DiagFlowTiming(ctrl, name),
+        DiagFilterStats(ctrl, name),
     ]
 
     async_add_entities(entities)
@@ -97,6 +103,8 @@ class VolumeSensor(BaseEntity, RestoreEntity):
                 self.ctrl._volume_l = last_val
                 if self.ctrl._offset_l == 0.0 or self.ctrl._offset_l > self.ctrl._volume_l:
                     self.ctrl._offset_l = self.ctrl._volume_l
+                # Merker: Wir haben restauriert → Controller soll Initialisierung NICHT ueberschreiben
+                setattr(self.ctrl, "_restored_volume", True)
             except (ValueError, TypeError):
                 pass
 
@@ -106,6 +114,13 @@ class VolumeSensor(BaseEntity, RestoreEntity):
     def native_value(self) -> float | None:
         val = self.ctrl.volume_l
         return None if val is None else round(val, 2)
+
+    @property
+    def extra_state_attributes(self):
+        return {
+            "offset_l": round(self.ctrl.offset_l, 2),
+            "volume_since_tick": round(self.ctrl.volume_since_tick, 2),
+        }
 
 
 class ResiduumSensor(BaseEntity):
@@ -335,4 +350,102 @@ class DiagHydrusTotal(BaseEntity):
         if hydrus is not None:
             attrs["delta_vibration_vs_hydrus"] = round(volume - hydrus, 2)
 
+        time_since = self.ctrl.time_since_hydrus_tick
+        if time_since < 999999:
+            attrs["minutes_since_tick"] = round(time_since / 60.0, 1)
+
         return attrs
+
+
+class DiagVibrationRaw(BaseEntity):
+    """Roher Vibrations-Wert (ungefiltert) fuer Debugging."""
+    def __init__(self, ctrl, name: str):
+        super().__init__(
+            ctrl, name, "Vibration Raw",
+            unit="m/s2",
+            icon="mdi:sine-wave",
+            state_class=SensorStateClass.MEASUREMENT,
+            entity_category=EntityCategory.DIAGNOSTIC,
+        )
+
+    @property
+    def native_value(self) -> float | None:
+        val = self.ctrl.last_std_raw
+        return None if val is None else round(val, 4)
+
+    @property
+    def extra_state_attributes(self):
+        raw = self.ctrl.last_std_raw or 0.0
+        filtered = self.ctrl.last_std or 0.0
+
+        return {
+            "filtered_std": round(filtered, 4),
+            "difference": round(raw - filtered, 4) if raw and filtered else 0.0,
+            "threshold": self.ctrl.std_threshold,
+        }
+
+
+class DiagFlowTiming(BaseEntity):
+    """Zeigt Flow-Timing Informationen."""
+    def __init__(self, ctrl, name: str):
+        super().__init__(
+            ctrl, name, "Flow Timing",
+            icon="mdi:timer-outline",
+            entity_category=EntityCategory.DIAGNOSTIC,
+        )
+
+    @property
+    def native_value(self) -> str:
+        if self.ctrl.flow_active:
+            duration = self.ctrl.flow_duration_s
+            if duration < 60:
+                return f"Aktiv {int(duration)}s"
+            else:
+                return f"Aktiv {int(duration/60)}m"
+        else:
+            idle = self.ctrl.idle_time_s
+            if idle < 60:
+                return f"Idle {int(idle)}s"
+            elif idle < 3600:
+                return f"Idle {int(idle/60)}m"
+            elif idle < 999999:
+                return f"Idle {int(idle/3600)}h"
+            else:
+                return "Nie"
+
+    @property
+    def icon(self) -> str:
+        return "mdi:timer" if self.ctrl.flow_active else "mdi:timer-off"
+
+    @property
+    def extra_state_attributes(self):
+        return {
+            "flow_active": self.ctrl.flow_active,
+            "flow_duration_s": round(self.ctrl.flow_duration_s, 1),
+            "idle_time_s": round(self.ctrl.idle_time_s, 1) if self.ctrl.idle_time_s < 999999 else None,
+            "current_flow_l_min": round(self.ctrl.last_flow_l_min, 2),
+        }
+
+
+class DiagFilterStats(BaseEntity):
+    """Zeigt Filter-Statistiken (Ausreisser etc)."""
+    def __init__(self, ctrl, name: str):
+        super().__init__(
+            ctrl, name, "Filter Stats",
+            icon="mdi:filter-check",
+            entity_category=EntityCategory.DIAGNOSTIC,
+        )
+
+    @property
+    def native_value(self) -> str:
+        rejected = self.ctrl.outliers_rejected
+        return f"{rejected} verworfen"
+
+    @property
+    def extra_state_attributes(self):
+        return {
+            "outliers_rejected": self.ctrl.outliers_rejected,
+            "is_calibrated": self.ctrl.is_calibrated,
+            "cal_factor": round(self.ctrl.cal_factor, 3),
+            "filter_info": "MAD-basierte Ausreisser-Erkennung + Moving Average",
+        }
