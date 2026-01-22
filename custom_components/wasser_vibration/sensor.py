@@ -20,6 +20,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         ResiduumSensor(ctrl, name),
         LiterMarkSensor(ctrl, name),
         FlowStatusSensor(ctrl, name),
+        CalibrationStatusSensor(ctrl, name),
+        CalibrationInfoSensor(ctrl, name),
         DiagVibrationStd(ctrl, name),
         DiagHydrusTotal(ctrl, name),
     ]
@@ -45,7 +47,7 @@ class BaseEntity(SensorEntity):
             identifiers={(DOMAIN, name)},
             name=name,
             manufacturer="Custom",
-            model="Vibration->Flow",
+            model="Vibration->Flow (Auto-Kalibrierung)",
         )
 
     async def async_added_to_hass(self):
@@ -88,7 +90,6 @@ class VolumeSensor(BaseEntity, RestoreEntity):
     async def async_added_to_hass(self):
         await super().async_added_to_hass()
 
-        # Letzten State laden
         last_state = await self.async_get_last_state()
         if last_state and last_state.state not in ("unknown", "unavailable"):
             try:
@@ -126,6 +127,7 @@ class ResiduumSensor(BaseEntity):
         return {
             "offset_l": round(self.ctrl.offset_l, 2),
             "max_residuum_l": round(self.ctrl.max_res_l, 2),
+            "volume_since_tick": round(self.ctrl.volume_since_tick, 2),
         }
 
 
@@ -147,8 +149,6 @@ class LiterMarkSensor(BaseEntity):
     def extra_state_attributes(self):
         residuum = self.ctrl.residuum_l
         current_mark = self.ctrl.current_liter_mark
-
-        # Naechste Marke berechnen
         next_mark = current_mark + 10
         remaining = next_mark - residuum
 
@@ -156,7 +156,6 @@ class LiterMarkSensor(BaseEntity):
             "current_residuum": round(residuum, 2),
             "next_mark": next_mark,
             "remaining_to_next": round(remaining, 2),
-            "available_marks": LITER_MARKS,
         }
 
 
@@ -170,7 +169,7 @@ class FlowStatusSensor(BaseEntity):
 
     @property
     def native_value(self) -> str:
-        return "Active" if self.ctrl.flow_active else "Inactive"
+        return "Wasser" if self.ctrl.flow_active else "Kein Wasser"
 
     @property
     def icon(self) -> str:
@@ -181,7 +180,6 @@ class FlowStatusSensor(BaseEntity):
         std = self.ctrl.last_std
         flow = self.ctrl.last_flow_l_min
 
-        # Status-Text basierend auf Flow
         if flow < 0.1:
             status = "Kein Wasser"
         elif flow < 3.0:
@@ -197,6 +195,80 @@ class FlowStatusSensor(BaseEntity):
             "flow_l_min": round(flow, 2) if flow else 0.0,
             "vibration_std": round(std, 4) if std else None,
             "status_text": status,
+        }
+
+
+# --- Kalibrierungs-Sensoren ---------------------------------------------------
+
+class CalibrationStatusSensor(BaseEntity):
+    """Zeigt aktuellen Kalibrierungs-Status."""
+    def __init__(self, ctrl, name: str):
+        super().__init__(
+            ctrl, name, "Kalibrierung Status",
+            icon="mdi:tune",
+            entity_category=EntityCategory.DIAGNOSTIC,
+        )
+
+    @property
+    def native_value(self) -> str:
+        mode = self.ctrl.calibration_mode
+        if mode == "low":
+            return "Kalibriere Schwach..."
+        elif mode == "high":
+            return "Kalibriere Stark..."
+        elif self.ctrl.is_calibrated:
+            return "Kalibriert"
+        else:
+            return "Nicht kalibriert"
+
+    @property
+    def icon(self) -> str:
+        if self.ctrl.calibration_mode:
+            return "mdi:progress-wrench"
+        elif self.ctrl.is_calibrated:
+            return "mdi:check-circle"
+        else:
+            return "mdi:alert-circle-outline"
+
+    @property
+    def extra_state_attributes(self):
+        attrs = {
+            "is_calibrated": self.ctrl.is_calibrated,
+            "calibration_active": self.ctrl.calibration_mode is not None,
+        }
+
+        if self.ctrl.calibration_mode:
+            attrs["mode"] = self.ctrl.calibration_mode
+            attrs["elapsed_seconds"] = round(self.ctrl.calibration_elapsed, 1)
+            attrs["samples_collected"] = self.ctrl.calibration_samples
+
+        return attrs
+
+
+class CalibrationInfoSensor(BaseEntity):
+    """Zeigt gelernte Kalibrierungs-Werte und Auto-Lern-Faktor."""
+    def __init__(self, ctrl, name: str):
+        super().__init__(
+            ctrl, name, "Kalibrierung Info",
+            icon="mdi:chart-line",
+            entity_category=EntityCategory.DIAGNOSTIC,
+        )
+
+    @property
+    def native_value(self) -> str:
+        factor = self.ctrl.cal_factor
+        return f"Faktor: {factor:.3f}"
+
+    @property
+    def extra_state_attributes(self):
+        return {
+            "cal_factor": round(self.ctrl.cal_factor, 3),
+            "cal_low_std": round(self.ctrl.cal_low_std, 4),
+            "cal_low_flow": round(self.ctrl.cal_low_flow, 2),
+            "cal_high_std": round(self.ctrl.cal_high_std, 4),
+            "cal_high_flow": round(self.ctrl.cal_high_flow, 2),
+            "std_threshold": round(self.ctrl.std_threshold, 4),
+            "info": "Faktor wird bei jedem 10L-Tick automatisch angepasst",
         }
 
 
@@ -222,13 +294,12 @@ class DiagVibrationStd(BaseEntity):
     def extra_state_attributes(self):
         std = self.ctrl.last_std or 0.0
         threshold = self.ctrl.std_threshold
-        std_max = self.ctrl.std_max
 
         return {
             "threshold": threshold,
-            "std_max": std_max,
             "above_threshold": std > threshold,
-            "percent_to_max": round((std - threshold) / (std_max - threshold) * 100, 1) if std > threshold and std_max > threshold else 0.0,
+            "cal_low_std": round(self.ctrl.cal_low_std, 4),
+            "cal_high_std": round(self.ctrl.cal_high_std, 4),
         }
 
 
@@ -257,6 +328,8 @@ class DiagHydrusTotal(BaseEntity):
         attrs = {
             "vibration_volume_l": round(volume, 2),
             "residuum_l": round(self.ctrl.residuum_l, 2),
+            "volume_since_tick": round(self.ctrl.volume_since_tick, 2),
+            "cal_factor": round(self.ctrl.cal_factor, 3),
         }
 
         if hydrus is not None:
