@@ -88,7 +88,8 @@ class TotalSensor(BaseEntity, RestoreEntity):
             state_class=SensorStateClass.TOTAL_INCREASING,
             device_class=SensorDeviceClass.WATER,
         )
-        self._base_total = 0.0
+        self._base_total = None  # None = noch nicht initialisiert
+        self._initialized = False
 
     async def async_added_to_hass(self):
         await super().async_added_to_hass()
@@ -96,18 +97,31 @@ class TotalSensor(BaseEntity, RestoreEntity):
         if last_state and last_state.state not in ("unknown", "unavailable"):
             try:
                 self._base_total = float(last_state.state)
+                self._initialized = True
             except (ValueError, TypeError):
                 pass
         self.async_write_ha_state()
 
     @property
     def native_value(self) -> float | None:
-        return round(self._base_total + self.ctrl.volume_l, 2)
+        # Wenn noch nicht initialisiert: Hydrus-Wert verwenden
+        if not self._initialized and self._base_total is None:
+            hydrus = self.ctrl.hydrus_total
+            if hydrus is not None:
+                self._base_total = hydrus
+                self._initialized = True
+
+        if self._base_total is None:
+            return None
+
+        # Total = Basis + geschaetztes Volumen seit letztem Tick
+        return round(self._base_total + self.ctrl.volume_since_tick, 2)
 
     @property
     def extra_state_attributes(self):
         return {
-            "seit_neustart_l": round(self.ctrl.volume_l, 2),
+            "basis_l": round(self._base_total, 2) if self._base_total else 0,
+            "seit_tick_l": round(self.ctrl.volume_since_tick, 2),
             "learn_count": self.ctrl.learn_count,
         }
 

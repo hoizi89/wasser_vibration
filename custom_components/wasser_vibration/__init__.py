@@ -26,7 +26,10 @@ OUTLIER_THRESHOLD = 3.0
 # Multi-Punkt Learning: Relative Offsets zur Schwelle
 # Bucket 0 = "schwach" (knapp ueber Schwelle), Bucket 4 = "sehr stark"
 BUCKET_OFFSETS = [0.000, 0.005, 0.010, 0.020, 0.050]  # Offsets relativ zur Schwelle
-DEFAULT_BUCKET_FACTOR = 1.0
+
+# WICHTIG: Default-Faktor auf 0.1 (konservativ) statt 1.0
+# Besser zu wenig schaetzen als zu viel - wird dann hochgelernt
+DEFAULT_BUCKET_FACTOR = 0.1
 
 # Persistierter Key fuer die letzte verwendete Schwelle (fuer Reset-Erkennung)
 KEY_LAST_THRESHOLD = "last_threshold"
