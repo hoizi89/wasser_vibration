@@ -6,7 +6,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import DOMAIN, DATA_CTRL, CONF_NAME, LITER_MARKS
+from .const import DOMAIN, DATA_CTRL, CONF_NAME
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
@@ -19,17 +19,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         FlowSensor(ctrl, name),
         VolumeSensor(ctrl, name),
         ResiduumSensor(ctrl, name),
-        LiterMarkSensor(ctrl, name),
         FlowStatusSensor(ctrl, name),
-        # Kalibrierung
-        CalibrationStatusSensor(ctrl, name),
-        CalibrationInfoSensor(ctrl, name),
+        # Auto-Learning Status
+        AutoLearnSensor(ctrl, name),
         # Diagnose
         DiagVibrationStd(ctrl, name),
-        DiagVibrationRaw(ctrl, name),
         DiagHydrusTotal(ctrl, name),
-        DiagFlowTiming(ctrl, name),
-        DiagFilterStats(ctrl, name),
     ]
 
     async_add_entities(entities)
@@ -53,7 +48,7 @@ class BaseEntity(SensorEntity):
             identifiers={(DOMAIN, name)},
             name=name,
             manufacturer="Custom",
-            model="Vibration->Flow (Auto-Kalibrierung)",
+            model="Vibration->Flow (Auto-Learning)",
         )
 
     async def async_added_to_hass(self):
@@ -67,7 +62,7 @@ class BaseEntity(SensorEntity):
 # --- Haupt-Sensoren -----------------------------------------------------------
 
 class FlowSensor(BaseEntity):
-    """Aktueller geschaetzter Durchfluss basierend auf Vibration."""
+    """Aktueller geschaetzter Durchfluss."""
     def __init__(self, ctrl, name: str):
         super().__init__(
             ctrl, name, "Flow",
@@ -83,7 +78,7 @@ class FlowSensor(BaseEntity):
 
 
 class VolumeSensor(BaseEntity, RestoreEntity):
-    """Kumuliertes Volumen (ohne Offset)."""
+    """Kumuliertes Volumen."""
     def __init__(self, ctrl, name: str):
         super().__init__(
             ctrl, name, "Volume",
@@ -103,7 +98,6 @@ class VolumeSensor(BaseEntity, RestoreEntity):
                 self.ctrl._volume_l = last_val
                 if self.ctrl._offset_l == 0.0 or self.ctrl._offset_l > self.ctrl._volume_l:
                     self.ctrl._offset_l = self.ctrl._volume_l
-                # Merker: Wir haben restauriert → Controller soll Initialisierung NICHT ueberschreiben
                 setattr(self.ctrl, "_restored_volume", True)
             except (ValueError, TypeError):
                 pass
@@ -124,7 +118,7 @@ class VolumeSensor(BaseEntity, RestoreEntity):
 
 
 class ResiduumSensor(BaseEntity):
-    """Residuum = Volume - Offset, geclampt [0..max_res_l]."""
+    """Residuum = Volume - Offset."""
     def __init__(self, ctrl, name: str):
         super().__init__(
             ctrl, name, "Residuum",
@@ -146,34 +140,6 @@ class ResiduumSensor(BaseEntity):
         }
 
 
-class LiterMarkSensor(BaseEntity):
-    """Zeigt die aktuelle 10L-Marke an (0, 10, 20, ...)."""
-    def __init__(self, ctrl, name: str):
-        super().__init__(
-            ctrl, name, "Liter Mark",
-            unit="L",
-            icon="mdi:ruler",
-            state_class=SensorStateClass.MEASUREMENT,
-        )
-
-    @property
-    def native_value(self) -> int:
-        return self.ctrl.current_liter_mark
-
-    @property
-    def extra_state_attributes(self):
-        residuum = self.ctrl.residuum_l
-        current_mark = self.ctrl.current_liter_mark
-        next_mark = current_mark + 10
-        remaining = next_mark - residuum
-
-        return {
-            "current_residuum": round(residuum, 2),
-            "next_mark": next_mark,
-            "remaining_to_next": round(remaining, 2),
-        }
-
-
 class FlowStatusSensor(BaseEntity):
     """Zeigt ob aktuell Wasser fliesst."""
     def __init__(self, ctrl, name: str):
@@ -192,8 +158,8 @@ class FlowStatusSensor(BaseEntity):
 
     @property
     def extra_state_attributes(self):
-        std = self.ctrl.last_std
         flow = self.ctrl.last_flow_l_min
+        std = self.ctrl.last_std
 
         if flow < 0.1:
             status = "Kein Wasser"
@@ -213,88 +179,52 @@ class FlowStatusSensor(BaseEntity):
         }
 
 
-# --- Kalibrierungs-Sensoren ---------------------------------------------------
+# --- Auto-Learning Status -----------------------------------------------------
 
-class CalibrationStatusSensor(BaseEntity):
-    """Zeigt aktuellen Kalibrierungs-Status."""
+class AutoLearnSensor(BaseEntity):
+    """Zeigt Auto-Learning Status und Faktor."""
     def __init__(self, ctrl, name: str):
         super().__init__(
-            ctrl, name, "Kalibrierung Status",
-            icon="mdi:tune",
+            ctrl, name, "Auto-Learn",
+            icon="mdi:brain",
             entity_category=EntityCategory.DIAGNOSTIC,
         )
 
     @property
     def native_value(self) -> str:
-        mode = self.ctrl.calibration_mode
-        if mode == "low":
-            return "Kalibriere Schwach..."
-        elif mode == "high":
-            return "Kalibriere Stark..."
-        elif self.ctrl.is_calibrated:
-            return "Kalibriert"
+        count = self.ctrl.learn_count
+        if count == 0:
+            return "Lerne..."
         else:
-            return "Nicht kalibriert"
+            return f"{count}x gelernt"
 
     @property
     def icon(self) -> str:
-        if self.ctrl.calibration_mode:
-            return "mdi:progress-wrench"
-        elif self.ctrl.is_calibrated:
-            return "mdi:check-circle"
+        if self.ctrl.learn_count == 0:
+            return "mdi:brain"
+        elif self.ctrl.learn_count < 5:
+            return "mdi:school"
         else:
-            return "mdi:alert-circle-outline"
-
-    @property
-    def extra_state_attributes(self):
-        attrs = {
-            "is_calibrated": self.ctrl.is_calibrated,
-            "calibration_active": self.ctrl.calibration_mode is not None,
-        }
-
-        if self.ctrl.calibration_mode:
-            attrs["mode"] = self.ctrl.calibration_mode
-            attrs["elapsed_seconds"] = round(self.ctrl.calibration_elapsed, 1)
-            attrs["samples_collected"] = self.ctrl.calibration_samples
-
-        return attrs
-
-
-class CalibrationInfoSensor(BaseEntity):
-    """Zeigt gelernte Kalibrierungs-Werte und Auto-Lern-Faktor."""
-    def __init__(self, ctrl, name: str):
-        super().__init__(
-            ctrl, name, "Kalibrierung Info",
-            icon="mdi:chart-line",
-            entity_category=EntityCategory.DIAGNOSTIC,
-        )
-
-    @property
-    def native_value(self) -> str:
-        factor = self.ctrl.cal_factor
-        return f"Faktor: {factor:.3f}"
+            return "mdi:check-decagram"
 
     @property
     def extra_state_attributes(self):
         return {
+            "learn_count": self.ctrl.learn_count,
             "cal_factor": round(self.ctrl.cal_factor, 3),
-            "cal_low_std": round(self.ctrl.cal_low_std, 4),
-            "cal_low_flow": round(self.ctrl.cal_low_flow, 2),
-            "cal_high_std": round(self.ctrl.cal_high_std, 4),
-            "cal_high_flow": round(self.ctrl.cal_high_flow, 2),
-            "std_threshold": round(self.ctrl.std_threshold, 4),
-            "info": "Faktor wird bei jedem 10L-Tick automatisch angepasst",
+            "is_calibrated": self.ctrl.is_calibrated,
+            "info": "Lernt automatisch bei jedem 10L Hydrus-Tick",
         }
 
 
 # --- Diagnose-Sensoren --------------------------------------------------------
 
 class DiagVibrationStd(BaseEntity):
-    """Aktuelle Vibrations-Standardabweichung vom Sensor."""
+    """Aktuelle Vibrations-Standardabweichung."""
     def __init__(self, ctrl, name: str):
         super().__init__(
             ctrl, name, "Vibration Std",
-            unit="m/s2",
+            unit="m/s²",
             icon="mdi:vibrate",
             state_class=SensorStateClass.MEASUREMENT,
             entity_category=EntityCategory.DIAGNOSTIC,
@@ -308,18 +238,19 @@ class DiagVibrationStd(BaseEntity):
     @property
     def extra_state_attributes(self):
         std = self.ctrl.last_std or 0.0
+        raw = self.ctrl.last_std_raw or 0.0
         threshold = self.ctrl.std_threshold
 
         return {
+            "raw_std": round(raw, 4),
             "threshold": threshold,
             "above_threshold": std > threshold,
-            "cal_low_std": round(self.ctrl.cal_low_std, 4),
-            "cal_high_std": round(self.ctrl.cal_high_std, 4),
+            "outliers_rejected": self.ctrl.outliers_rejected,
         }
 
 
 class DiagHydrusTotal(BaseEntity):
-    """Aktueller Wert des Wasserzaehlers (wenn konfiguriert)."""
+    """Aktueller Wert des Wasserzaehlers."""
     def __init__(self, ctrl, name: str):
         super().__init__(
             ctrl, name, "Hydrus Total",
@@ -345,6 +276,7 @@ class DiagHydrusTotal(BaseEntity):
             "residuum_l": round(self.ctrl.residuum_l, 2),
             "volume_since_tick": round(self.ctrl.volume_since_tick, 2),
             "cal_factor": round(self.ctrl.cal_factor, 3),
+            "learn_count": self.ctrl.learn_count,
         }
 
         if hydrus is not None:
@@ -355,97 +287,3 @@ class DiagHydrusTotal(BaseEntity):
             attrs["minutes_since_tick"] = round(time_since / 60.0, 1)
 
         return attrs
-
-
-class DiagVibrationRaw(BaseEntity):
-    """Roher Vibrations-Wert (ungefiltert) fuer Debugging."""
-    def __init__(self, ctrl, name: str):
-        super().__init__(
-            ctrl, name, "Vibration Raw",
-            unit="m/s2",
-            icon="mdi:sine-wave",
-            state_class=SensorStateClass.MEASUREMENT,
-            entity_category=EntityCategory.DIAGNOSTIC,
-        )
-
-    @property
-    def native_value(self) -> float | None:
-        val = self.ctrl.last_std_raw
-        return None if val is None else round(val, 4)
-
-    @property
-    def extra_state_attributes(self):
-        raw = self.ctrl.last_std_raw or 0.0
-        filtered = self.ctrl.last_std or 0.0
-
-        return {
-            "filtered_std": round(filtered, 4),
-            "difference": round(raw - filtered, 4) if raw and filtered else 0.0,
-            "threshold": self.ctrl.std_threshold,
-        }
-
-
-class DiagFlowTiming(BaseEntity):
-    """Zeigt Flow-Timing Informationen."""
-    def __init__(self, ctrl, name: str):
-        super().__init__(
-            ctrl, name, "Flow Timing",
-            icon="mdi:timer-outline",
-            entity_category=EntityCategory.DIAGNOSTIC,
-        )
-
-    @property
-    def native_value(self) -> str:
-        if self.ctrl.flow_active:
-            duration = self.ctrl.flow_duration_s
-            if duration < 60:
-                return f"Aktiv {int(duration)}s"
-            else:
-                return f"Aktiv {int(duration/60)}m"
-        else:
-            idle = self.ctrl.idle_time_s
-            if idle < 60:
-                return f"Idle {int(idle)}s"
-            elif idle < 3600:
-                return f"Idle {int(idle/60)}m"
-            elif idle < 999999:
-                return f"Idle {int(idle/3600)}h"
-            else:
-                return "Nie"
-
-    @property
-    def icon(self) -> str:
-        return "mdi:timer" if self.ctrl.flow_active else "mdi:timer-off"
-
-    @property
-    def extra_state_attributes(self):
-        return {
-            "flow_active": self.ctrl.flow_active,
-            "flow_duration_s": round(self.ctrl.flow_duration_s, 1),
-            "idle_time_s": round(self.ctrl.idle_time_s, 1) if self.ctrl.idle_time_s < 999999 else None,
-            "current_flow_l_min": round(self.ctrl.last_flow_l_min, 2),
-        }
-
-
-class DiagFilterStats(BaseEntity):
-    """Zeigt Filter-Statistiken (Ausreisser etc)."""
-    def __init__(self, ctrl, name: str):
-        super().__init__(
-            ctrl, name, "Filter Stats",
-            icon="mdi:filter-check",
-            entity_category=EntityCategory.DIAGNOSTIC,
-        )
-
-    @property
-    def native_value(self) -> str:
-        rejected = self.ctrl.outliers_rejected
-        return f"{rejected} verworfen"
-
-    @property
-    def extra_state_attributes(self):
-        return {
-            "outliers_rejected": self.ctrl.outliers_rejected,
-            "is_calibrated": self.ctrl.is_calibrated,
-            "cal_factor": round(self.ctrl.cal_factor, 3),
-            "filter_info": "MAD-basierte Ausreisser-Erkennung + Moving Average",
-        }
