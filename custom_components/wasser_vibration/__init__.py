@@ -31,9 +31,6 @@ BUCKET_OFFSETS = [0.000, 0.005, 0.010, 0.020, 0.050]  # Offsets relativ zur Schw
 # Besser zu wenig schaetzen als zu viel - wird dann hochgelernt
 DEFAULT_BUCKET_FACTOR = 0.1
 
-# Persistierter Key fuer die letzte verwendete Schwelle (fuer Reset-Erkennung)
-KEY_LAST_THRESHOLD = "last_threshold"
-
 
 def _m3_to_l(v: float) -> float:
     return v * 1000.0
@@ -53,34 +50,18 @@ class WasserVibrationController:
         self.std_threshold = entry.options.get(CONF_STD_THRESHOLD, DEFAULT_STD_THRESHOLD)
         self.max_res_l = entry.options.get(CONF_MAX_RES_L, DEFAULT_MAX_RES_L)
 
-        # Pruefen ob Schwelle geaendert wurde -> Reset der Lernwerte
-        last_threshold = entry.options.get(KEY_LAST_THRESHOLD, self.std_threshold)
-        threshold_changed = abs(last_threshold - self.std_threshold) > 0.0001
-
         # Multi-Punkt Learning: Faktoren pro Std-Bereich (relativ zur Schwelle)
         # Buckets sind: schwelle+0.000, schwelle+0.005, schwelle+0.010, schwelle+0.020, schwelle+0.050
+        # Reset nur ueber Options-Checkbox, nicht automatisch bei Schwellenänderung
         self._bucket_factors = {}
         self._bucket_counts = {}
         self._bucket_times = {}  # Zeit in Sekunden pro Bucket
 
         for i, offset in enumerate(BUCKET_OFFSETS):
             key = f"bucket_{i}"  # bucket_0 = schwach, bucket_4 = sehr stark
-            if threshold_changed:
-                # Bei Schwellenänderung: Reset auf Defaults
-                self._bucket_factors[key] = DEFAULT_BUCKET_FACTOR
-                self._bucket_counts[key] = 0
-                self._bucket_times[key] = 0.0
-            else:
-                self._bucket_factors[key] = entry.options.get(key, DEFAULT_BUCKET_FACTOR)
-                self._bucket_counts[key] = entry.options.get(f"{key}_count", 0)
-                self._bucket_times[key] = entry.options.get(f"{key}_time", 0.0)
-
-        # Schwelle speichern fuer naechsten Start
-        if threshold_changed:
-            _LOGGER.info("Schwelle geaendert: %.4f -> %.4f - Lernwerte zurueckgesetzt!",
-                        last_threshold, self.std_threshold)
-            self._learn_count = 0
-            hass.async_create_task(self._persist_options({KEY_LAST_THRESHOLD: self.std_threshold}))
+            self._bucket_factors[key] = entry.options.get(key, DEFAULT_BUCKET_FACTOR)
+            self._bucket_counts[key] = entry.options.get(f"{key}_count", 0)
+            self._bucket_times[key] = entry.options.get(f"{key}_time", 0.0)
 
         # Fallback: Globaler Faktor (für Kompatibilität)
         self.cal_factor = entry.options.get(CONF_CAL_FACTOR, DEFAULT_CAL_FACTOR)
@@ -106,10 +87,7 @@ class WasserVibrationController:
         self._time_per_bucket_since_tick = {}  # Zeit pro Bucket seit letztem Tick
         self._last_bucket_time = None  # Timestamp des letzten Bucket-Wechsels
         self._current_bucket_key = None
-        if not threshold_changed:
-            self._learn_count = entry.options.get("learn_count", 0)
-        else:
-            self._learn_count = 0
+        self._learn_count = entry.options.get("learn_count", 0)
 
         # Flow-Status
         self._flow_active = False

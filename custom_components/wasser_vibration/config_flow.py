@@ -6,7 +6,7 @@ from homeassistant.helpers import selector
 
 from .const import (
     DOMAIN, CONF_NAME, CONF_VIBRATION_ENTITY, CONF_TOTAL_ENTITY, CONF_TOTAL_UNIT,
-    CONF_STD_THRESHOLD, CONF_MAX_RES_L,
+    CONF_STD_THRESHOLD, CONF_MAX_RES_L, CONF_RESET_LEARNING,
     DEFAULT_NAME, DEFAULT_STD_THRESHOLD, DEFAULT_MAX_RES_L, DEFAULT_TOTAL_UNIT,
     RANGE_STD, RANGE_MAX_RES,
 )
@@ -44,6 +44,16 @@ class WasserVibrationOptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_init(self, user_input=None):
         if user_input is not None:
+            # Reset-Flag nicht in options speichern, nur auswerten
+            do_reset = user_input.pop(CONF_RESET_LEARNING, False)
+            if do_reset:
+                # Alle Bucket-Daten entfernen
+                user_input["learn_count"] = 0
+                for i in range(5):
+                    user_input[f"bucket_{i}"] = 0.1  # Default factor
+                    user_input[f"bucket_{i}_count"] = 0
+                    user_input[f"bucket_{i}_time"] = 0.0
+
             return self.async_create_entry(title="", data=user_input)
 
         # Aktuelle Werte aus options holen (mit defaults)
@@ -72,6 +82,7 @@ class WasserVibrationOptionsFlow(config_entries.OptionsFlow):
                     mode=selector.NumberSelectorMode.BOX,
                 )
             ),
+            vol.Optional(CONF_RESET_LEARNING, default=False): selector.BooleanSelector(),
         }
 
         return self.async_show_form(

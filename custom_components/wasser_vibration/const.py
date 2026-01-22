@@ -21,6 +21,7 @@ CONF_TOTAL_UNIT: Final[str] = "total_unit"
 # --- Option keys --------------------------------------------------------------
 CONF_STD_THRESHOLD: Final[str] = "std_threshold"  # Schwellwert fuer "kein Wasser"
 CONF_MAX_RES_L: Final[str] = "max_residuum_l"
+CONF_RESET_LEARNING: Final[str] = "reset_learning"  # Lerndaten zuruecksetzen
 
 # --- Kalibrierungs-Keys (werden automatisch gelernt) --------------------------
 CONF_CAL_LOW_STD: Final[str] = "cal_low_std"      # Std bei schwachem Flow

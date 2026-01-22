@@ -29,14 +29,16 @@
     "step": {
       "init": {
         "title": "Settings",
-        "description": "Adjust threshold for vibration detection. Changing the threshold will reset learned factors.",
+        "description": "Adjust threshold and manage learning data.",
         "data": {
           "std_threshold": "Threshold (m/s²)",
-          "max_residuum_l": "Max Residuum (L)"
+          "max_residuum_l": "Max Residuum (L)",
+          "reset_learning": "Reset learned data"
         },
         "data_description": {
-          "std_threshold": "Below this value = no water (default: 0.050). Changing resets learning!",
-          "max_residuum_l": "Upper limit for residuum display (default: 10L)"
+          "std_threshold": "Below this value = no water (default: 0.050)",
+          "max_residuum_l": "Upper limit for residuum display (default: 10L)",
+          "reset_learning": "Check to reset all learned factors to default (0.1)"
         }
       }
     }
