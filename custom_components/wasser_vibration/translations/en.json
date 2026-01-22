@@ -35,7 +35,7 @@
           "max_residuum_l": "Max Residuum (L)"
         },
         "data_description": {
-          "std_threshold": "Below this value = no water (default: 0.050)",
+          "std_threshold": "Below this value = no water (default: 0.050). Changing resets learning!",
           "max_residuum_l": "Upper limit for residuum display (default: 10L)"
         }
       }

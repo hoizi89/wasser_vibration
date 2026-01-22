@@ -35,7 +35,7 @@
           "max_residuum_l": "Max Residuum (L)"
         },
         "data_description": {
-          "std_threshold": "Unterhalb dieses Werts = kein Wasser (Standard: 0.050)",
+          "std_threshold": "Unterhalb dieses Werts = kein Wasser (Standard: 0.050). Aenderung setzt Lernen zurueck!",
           "max_residuum_l": "Obergrenze fuer Residuum-Anzeige (Standard: 10L)"
         }
       }

@@ -54,9 +54,9 @@ class WasserVibrationOptionsFlow(config_entries.OptionsFlow):
             CONF_MAX_RES_L, DEFAULT_MAX_RES_L
         )
 
-        # Schema mit NumberSelector
+        # Schema mit NumberSelector - vol.Required damit sie angezeigt werden
         schema_dict = {
-            vol.Optional(CONF_STD_THRESHOLD, default=current_threshold): selector.NumberSelector(
+            vol.Required(CONF_STD_THRESHOLD, default=current_threshold): selector.NumberSelector(
                 selector.NumberSelectorConfig(
                     min=RANGE_STD["min"],
                     max=RANGE_STD["max"],
@@ -64,7 +64,7 @@ class WasserVibrationOptionsFlow(config_entries.OptionsFlow):
                     mode=selector.NumberSelectorMode.BOX,
                 )
             ),
-            vol.Optional(CONF_MAX_RES_L, default=current_max_res): selector.NumberSelector(
+            vol.Required(CONF_MAX_RES_L, default=current_max_res): selector.NumberSelector(
                 selector.NumberSelectorConfig(
                     min=RANGE_MAX_RES["min"],
                     max=RANGE_MAX_RES["max"],
