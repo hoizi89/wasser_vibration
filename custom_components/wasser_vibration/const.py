@@ -44,7 +44,7 @@ DEFAULT_CAL_HIGH_FLOW: Final[float] = 15.0   # 15 L/min bei stark
 DEFAULT_CAL_FACTOR: Final[float] = 0.1       # Korrektur-Faktor (konservativ starten)
 
 # --- Ranges fuer Config Flow / Options ----------------------------------------
-RANGE_STD: Final[dict] = {"min": 0.01, "max": 0.2, "step": 0.001}
+RANGE_STD: Final[dict] = {"min": 0.01, "max": 0.5, "step": 0.001}
 RANGE_FLOW: Final[dict] = {"min": 1.0, "max": 30.0, "step": 0.5}
 RANGE_MAX_RES: Final[dict] = {"min": 5.0, "max": 50.0, "step": 1.0}
 
