@@ -200,7 +200,7 @@ class AutoLearnSensor(BaseEntity):
     def extra_state_attributes(self):
         attrs = {
             "learn_count": self.ctrl.learn_count,
-            "threshold": self.ctrl.std_threshold,
+            "threshold": round(self.ctrl.std_threshold, 4),
             "is_calibrated": self.ctrl.is_calibrated,
             "info": "Lernt bei jedem 10L Hydrus-Tick automatisch",
         }
@@ -242,7 +242,7 @@ class BucketInfoSensor(BaseEntity):
         time_since_tick = self.ctrl.time_per_bucket_since_tick
 
         attrs = {
-            "threshold": self.ctrl.std_threshold,
+            "threshold": round(self.ctrl.std_threshold, 4),
             "current": self.ctrl.current_bucket_label,
         }
 
@@ -286,7 +286,7 @@ class DiagVibrationStd(BaseEntity):
 
         return {
             "raw_std": round(raw, 4),
-            "threshold": threshold,
+            "threshold": round(threshold, 4),
             "above_threshold": std > threshold,
             "delta_to_threshold": round(std - threshold, 4),
             "outliers_rejected": self.ctrl.outliers_rejected,
