@@ -182,7 +182,7 @@ class FlowStatusSensor(BaseEntity):
 # --- Auto-Learning Status -----------------------------------------------------
 
 class AutoLearnSensor(BaseEntity):
-    """Zeigt Auto-Learning Status und Faktor."""
+    """Zeigt Auto-Learning Status mit Multi-Punkt Lernen."""
     def __init__(self, ctrl, name: str):
         super().__init__(
             ctrl, name, "Auto-Learn",
@@ -209,12 +209,23 @@ class AutoLearnSensor(BaseEntity):
 
     @property
     def extra_state_attributes(self):
-        return {
+        # Bucket-Faktoren lesbar machen
+        bucket_info = {}
+        for key, factor in self.ctrl.bucket_factors.items():
+            count = self.ctrl.bucket_counts.get(key, 0)
+            # "bucket_0.050" -> "schwach (0.050)"
+            std_val = key.replace("bucket_", "")
+            bucket_info[f"factor_{std_val}"] = round(factor, 3)
+            bucket_info[f"count_{std_val}"] = count
+
+        attrs = {
             "learn_count": self.ctrl.learn_count,
-            "cal_factor": round(self.ctrl.cal_factor, 3),
+            "current_bucket": self.ctrl.current_bucket,
             "is_calibrated": self.ctrl.is_calibrated,
-            "info": "Lernt automatisch bei jedem 10L Hydrus-Tick",
+            "info": "Multi-Punkt Lernen: Verschiedene Faktoren fuer schwachen/starken Fluss",
         }
+        attrs.update(bucket_info)
+        return attrs
 
 
 # --- Diagnose-Sensoren --------------------------------------------------------

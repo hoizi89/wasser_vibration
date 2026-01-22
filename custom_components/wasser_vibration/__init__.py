@@ -23,8 +23,10 @@ _LOGGER = logging.getLogger(__name__)
 STD_HISTORY_SIZE = 10
 OUTLIER_THRESHOLD = 3.0
 
-# Auto-Learning: Basis Flow-Rate bei Std=0.050 (wird automatisch angepasst)
-BASE_FLOW_AT_STD_050 = 8.0  # L/min - Startwert, lernt automatisch
+# Multi-Punkt Learning: Std-Bereiche mit eigenen Faktoren
+# Format: {std_bucket: (factor, learn_count)}
+STD_BUCKETS = [0.050, 0.055, 0.060, 0.070, 0.100]  # Grenzen der Buckets
+DEFAULT_BUCKET_FACTOR = 1.0
 
 
 def _m3_to_l(v: float) -> float:
@@ -45,7 +47,16 @@ class WasserVibrationController:
         self.std_threshold = entry.options.get(CONF_STD_THRESHOLD, DEFAULT_STD_THRESHOLD)
         self.max_res_l = entry.options.get(CONF_MAX_RES_L, DEFAULT_MAX_RES_L)
 
-        # Auto-Lern Faktor (einziger Kalibrierungs-Parameter!)
+        # Multi-Punkt Learning: Faktoren pro Std-Bereich
+        # Gespeichert als: {"bucket_0.050": 1.0, "bucket_0.055": 1.2, ...}
+        self._bucket_factors = {}
+        self._bucket_counts = {}
+        for bucket in STD_BUCKETS:
+            key = f"bucket_{bucket:.3f}"
+            self._bucket_factors[key] = entry.options.get(key, DEFAULT_BUCKET_FACTOR)
+            self._bucket_counts[key] = entry.options.get(f"{key}_count", 0)
+
+        # Fallback: Globaler Faktor (für Kompatibilität)
         self.cal_factor = entry.options.get(CONF_CAL_FACTOR, DEFAULT_CAL_FACTOR)
 
         # Interne Zustaende
@@ -81,6 +92,18 @@ class WasserVibrationController:
         self._remove_vibration_listener = None
         self._remove_total_listener = None
 
+    def _get_bucket_key(self, std: float) -> str:
+        """Findet den passenden Bucket für einen Std-Wert."""
+        for bucket in STD_BUCKETS:
+            if std <= bucket:
+                return f"bucket_{bucket:.3f}"
+        return f"bucket_{STD_BUCKETS[-1]:.3f}"
+
+    def _get_bucket_factor(self, std: float) -> float:
+        """Holt den gelernten Faktor für einen Std-Bereich."""
+        key = self._get_bucket_key(std)
+        return self._bucket_factors.get(key, DEFAULT_BUCKET_FACTOR)
+
     def _filter_std(self, raw_std: float) -> float | None:
         """Filtert Ausreisser und glaettet mit Moving Average."""
         self._std_history.append(raw_std)
@@ -104,25 +127,23 @@ class WasserVibrationController:
 
     def _std_to_flow(self, std: float) -> float:
         """
-        Einfache lineare Formel: flow = (std - threshold) * factor * base_rate
+        Multi-Punkt Lernen: Verwendet bucket-spezifische Faktoren.
 
-        Bei std=0.050 und threshold=0.048:
-        flow = (0.050 - 0.048) * factor * base_rate
-        flow = 0.002 * 1.0 * 4000 = 8 L/min (Startwert)
+        Formel: flow = (std - threshold) * base_rate * bucket_factor
 
-        Der factor wird automatisch angepasst bei jedem 10L-Tick.
+        Jeder Std-Bereich (Bucket) hat seinen eigenen gelernten Faktor,
+        sodass schwacher und starker Wasserfluss unterschiedlich behandelt werden.
         """
         if std <= self.std_threshold:
             return 0.0
 
-        # Lineare Beziehung: mehr Vibration = mehr Flow
         delta_std = std - self.std_threshold
+        base_rate = 4000.0  # Basis: 8 L/min bei std=0.050
 
-        # Base rate so dass bei std=0.050 etwa 8 L/min rauskommen
-        # (0.050 - 0.048) = 0.002 -> 8 L/min -> base_rate = 4000
-        base_rate = 4000.0
+        # Bucket-spezifischen Faktor verwenden
+        bucket_factor = self._get_bucket_factor(std)
 
-        flow = delta_std * base_rate * self.cal_factor
+        flow = delta_std * base_rate * bucket_factor
 
         return max(0.0, min(flow, 50.0))
 
@@ -212,6 +233,23 @@ class WasserVibrationController:
         """True wenn mindestens ein Auto-Lern Zyklus durchlaufen wurde."""
         return self._learn_count > 0
 
+    @property
+    def bucket_factors(self) -> dict:
+        """Gibt alle Bucket-Faktoren zurueck."""
+        return self._bucket_factors.copy()
+
+    @property
+    def bucket_counts(self) -> dict:
+        """Gibt Lern-Zaehler pro Bucket zurueck."""
+        return self._bucket_counts.copy()
+
+    @property
+    def current_bucket(self) -> str:
+        """Aktueller Bucket basierend auf letztem Std."""
+        if self._last_std is None:
+            return "none"
+        return self._get_bucket_key(self._last_std)
+
     def register_entity_listener(self, cb) -> None:
         self.__dict__.setdefault("_entity_listeners", []).append(cb)
 
@@ -264,30 +302,41 @@ class WasserVibrationController:
             self._notify_entities(force=True)  # Sofort bei Initialisierung
             return
 
-        # 10L-Tick Erkennung -> AUTO-LEARNING!
+        # 10L-Tick Erkennung -> MULTI-PUNKT AUTO-LEARNING!
         delta_l = now_total_l - self._last_hydrus_total
         if 9.5 <= delta_l <= 10.5:
             estimated = self._volume_since_tick
 
-            if estimated > 1.0:
+            if estimated > 1.0 and len(self._std_samples_since_tick) > 0:
+                # Durchschnittlichen Std-Wert waehrend des Flows berechnen
+                avg_std = sum(self._std_samples_since_tick) / len(self._std_samples_since_tick)
+                bucket_key = self._get_bucket_key(avg_std)
+
                 # Korrektur berechnen: Soll 10L sein, haben aber X geschaetzt
                 correction = 10.0 / estimated
 
-                # Sanft anpassen (15% pro Tick)
-                target_factor = self.cal_factor * correction
-                new_factor = self.cal_factor + CAL_ADAPT_RATE * (target_factor - self.cal_factor)
+                # Aktuellen Bucket-Faktor holen und anpassen
+                old_factor = self._bucket_factors.get(bucket_key, DEFAULT_BUCKET_FACTOR)
+                target_factor = old_factor * correction
+                new_factor = old_factor + CAL_ADAPT_RATE * (target_factor - old_factor)
                 new_factor = max(CAL_MIN_FACTOR, min(CAL_MAX_FACTOR, new_factor))
 
+                # Speichern
+                self._bucket_factors[bucket_key] = new_factor
+                self._bucket_counts[bucket_key] = self._bucket_counts.get(bucket_key, 0) + 1
                 self._learn_count += 1
 
                 _LOGGER.info(
-                    "AUTO-LEARN #%d: Geschaetzt=%.1fL, Soll=10L, Faktor: %.3f -> %.3f",
-                    self._learn_count, estimated, self.cal_factor, new_factor
+                    "AUTO-LEARN #%d [%s]: Avg-Std=%.4f, Geschaetzt=%.1fL, Faktor: %.3f -> %.3f",
+                    self._learn_count, bucket_key, avg_std, estimated, old_factor, new_factor
                 )
 
-                self.cal_factor = new_factor
+                # Persistieren
                 self.hass.async_create_task(
-                    self._persist_options({CONF_CAL_FACTOR: new_factor})
+                    self._persist_options({
+                        bucket_key: new_factor,
+                        f"{bucket_key}_count": self._bucket_counts[bucket_key],
+                    })
                 )
 
             # Reset fuer naechsten Tick

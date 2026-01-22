@@ -44,10 +44,9 @@ class WasserVibrationOptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_init(self, user_input=None):
         if user_input is not None:
-            # Nur Options speichern (nicht data aendern)
             return self.async_create_entry(title="", data=user_input)
 
-        # Aktuelle Werte aus options (mit defaults)
+        # Aktuelle Werte aus options holen (mit defaults)
         current_threshold = self.config_entry.options.get(
             CONF_STD_THRESHOLD, DEFAULT_STD_THRESHOLD
         )
@@ -55,32 +54,27 @@ class WasserVibrationOptionsFlow(config_entries.OptionsFlow):
             CONF_MAX_RES_L, DEFAULT_MAX_RES_L
         )
 
+        # Schema mit NumberSelector
+        schema_dict = {
+            vol.Optional(CONF_STD_THRESHOLD, default=current_threshold): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=RANGE_STD["min"],
+                    max=RANGE_STD["max"],
+                    step=RANGE_STD["step"],
+                    mode=selector.NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Optional(CONF_MAX_RES_L, default=current_max_res): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=RANGE_MAX_RES["min"],
+                    max=RANGE_MAX_RES["max"],
+                    step=RANGE_MAX_RES["step"],
+                    mode=selector.NumberSelectorMode.BOX,
+                )
+            ),
+        }
+
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema({
-                vol.Required(
-                    CONF_STD_THRESHOLD,
-                    default=current_threshold
-                ): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=RANGE_STD["min"],
-                        max=RANGE_STD["max"],
-                        step=RANGE_STD["step"],
-                        mode=selector.NumberSelectorMode.BOX,
-                        unit_of_measurement="m/s²",
-                    )
-                ),
-                vol.Required(
-                    CONF_MAX_RES_L,
-                    default=current_max_res
-                ): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=RANGE_MAX_RES["min"],
-                        max=RANGE_MAX_RES["max"],
-                        step=RANGE_MAX_RES["step"],
-                        mode=selector.NumberSelectorMode.BOX,
-                        unit_of_measurement="L",
-                    )
-                ),
-            }),
+            data_schema=vol.Schema(schema_dict),
         )
