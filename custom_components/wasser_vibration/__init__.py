@@ -99,8 +99,10 @@ class WasserVibrationController:
         self._last_notify_time = 0.0
         self._notify_interval = 2.0  # Sekunden
 
+        # Event-Listener (werden in async_start gesetzt)
         self._remove_vibration_listener = None
         self._remove_total_listener = None
+        self._entity_listeners = []
 
     def _get_bucket_key(self, std: float) -> str:
         """Findet den passenden Bucket fuer einen Std-Wert (relativ zur Schwelle)."""
@@ -308,7 +310,7 @@ class WasserVibrationController:
         return self._time_per_bucket_since_tick.copy()
 
     def register_entity_listener(self, cb) -> None:
-        self.__dict__.setdefault("_entity_listeners", []).append(cb)
+        self._entity_listeners.append(cb)
 
     def reset_residuum(self) -> None:
         """Manueller Reset."""
@@ -499,7 +501,7 @@ class WasserVibrationController:
         self._last_notify_time = now
         self.hass.data[DOMAIN][self.entry.entry_id][DATA_CTRL] = self
 
-        for cb in self.__dict__.get("_entity_listeners", []):
+        for cb in self._entity_listeners:
             try:
                 cb()
             except Exception as e:
