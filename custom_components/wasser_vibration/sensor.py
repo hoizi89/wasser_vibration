@@ -258,17 +258,26 @@ class BucketInfoSensor(BaseEntity):
     def extra_state_attributes(self):
         # Alle Bucket-Infos aufbereiten
         all_buckets = self.ctrl.get_all_bucket_info()
+        time_since_tick = self.ctrl.time_per_bucket_since_tick
+
         attrs = {
             "threshold": self.ctrl.std_threshold,
             "current": self.ctrl.current_bucket_label,
         }
 
+        # Gesamt-Zeit seit Tick
+        total_since_tick = sum(time_since_tick.values())
+        attrs["seit_tick_s"] = round(total_since_tick, 1)
+
         for info in all_buckets:
             label = info["label"]
-            # Kompakte Info pro Bucket
-            attrs[f"{label}"] = f"F={info['factor']:.2f} | {info['count']}x | {info['time_s']/60:.1f}min | ab {info['abs_threshold']:.4f}"
+            bucket_key = f"bucket_{info['index']}"
+            current_s = time_since_tick.get(bucket_key, 0.0)
 
-        attrs["legende"] = "F=Faktor | Anzahl Lern-Zyklen | Zeit aktiv | Schwelle"
+            # Kompakte Info: Faktor | Lern-Zyklen | Gesamt-Sekunden | AKTUELL seit Tick
+            attrs[f"{label}"] = f"F={info['factor']:.2f} | {info['count']}x | {info['time_s']:.0f}s | jetzt:{current_s:.0f}s"
+
+        attrs["legende"] = "F=Faktor | Lern-Zyklen | Gesamt | Aktuell seit Tick"
         return attrs
 
 

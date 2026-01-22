@@ -302,6 +302,11 @@ class WasserVibrationController:
             result.append(self._get_bucket_info(key))
         return result
 
+    @property
+    def time_per_bucket_since_tick(self) -> dict:
+        """Zeit pro Bucket seit dem letzten Hydrus-Tick (Sekunden)."""
+        return self._time_per_bucket_since_tick.copy()
+
     def register_entity_listener(self, cb) -> None:
         self.__dict__.setdefault("_entity_listeners", []).append(cb)
 
@@ -354,48 +359,46 @@ class WasserVibrationController:
             self._notify_entities(force=True)  # Sofort bei Initialisierung
             return
 
-        # 10L-Tick Erkennung -> MULTI-PUNKT AUTO-LEARNING!
+        # 10L-Tick Erkennung -> MULTI-BUCKET AUTO-LEARNING!
         delta_l = now_total_l - self._last_hydrus_total
         if 9.5 <= delta_l <= 10.5:
             estimated = self._volume_since_tick
 
-            if estimated > 1.0 and len(self._std_samples_since_tick) > 0:
-                # Durchschnittlichen Std-Wert waehrend des Flows berechnen
-                avg_std = sum(self._std_samples_since_tick) / len(self._std_samples_since_tick)
-                bucket_key = self._get_bucket_key(avg_std)
-
-                # Korrektur berechnen: Soll 10L sein, haben aber X geschaetzt
+            # NEUES LERNEN: Jeden Bucket separat lernen (proportional zur Zeit)
+            if estimated > 1.0 and self._time_per_bucket_since_tick:
+                # Gesamt-Korrektur: Soll 10L sein, haben aber X geschaetzt
                 correction = 10.0 / estimated
+                total_time = sum(self._time_per_bucket_since_tick.values())
 
-                # Aktuellen Bucket-Faktor holen und anpassen
-                old_factor = self._bucket_factors.get(bucket_key, DEFAULT_BUCKET_FACTOR)
-                target_factor = old_factor * correction
-                new_factor = old_factor + CAL_ADAPT_RATE * (target_factor - old_factor)
-                new_factor = max(CAL_MIN_FACTOR, min(CAL_MAX_FACTOR, new_factor))
+                # Jeden Bucket der aktiv war anpassen
+                persist_data = {"learn_count": self._learn_count + 1}
+                buckets_learned = []
 
-                # Speichern
-                self._bucket_factors[bucket_key] = new_factor
-                self._bucket_counts[bucket_key] = self._bucket_counts.get(bucket_key, 0) + 1
+                for bucket_key, bucket_time in self._time_per_bucket_since_tick.items():
+                    if bucket_time >= 1.0:  # Mindestens 1 Sekunde aktiv
+                        old_factor = self._bucket_factors.get(bucket_key, DEFAULT_BUCKET_FACTOR)
+                        target_factor = old_factor * correction
+                        new_factor = old_factor + CAL_ADAPT_RATE * (target_factor - old_factor)
+                        new_factor = max(CAL_MIN_FACTOR, min(CAL_MAX_FACTOR, new_factor))
+
+                        self._bucket_factors[bucket_key] = new_factor
+                        self._bucket_counts[bucket_key] = self._bucket_counts.get(bucket_key, 0) + 1
+
+                        persist_data[bucket_key] = new_factor
+                        persist_data[f"{bucket_key}_count"] = self._bucket_counts[bucket_key]
+
+                        buckets_learned.append(f"{bucket_key}({bucket_time:.0f}s): {old_factor:.3f}->{new_factor:.3f}")
+
+                    # Zeit-Stats akkumulieren (auch wenn < 1s)
+                    self._bucket_times[bucket_key] = self._bucket_times.get(bucket_key, 0.0) + bucket_time
+                    persist_data[f"{bucket_key}_time"] = self._bucket_times[bucket_key]
+
                 self._learn_count += 1
 
-                # Zeit-Stats akkumulieren
-                for bkey, btime in self._time_per_bucket_since_tick.items():
-                    self._bucket_times[bkey] = self._bucket_times.get(bkey, 0.0) + btime
-
-                total_time = sum(self._time_per_bucket_since_tick.values())
                 _LOGGER.info(
-                    "AUTO-LEARN #%d [%s]: Avg-Std=%.4f, Geschaetzt=%.1fL, Zeit=%.1fs, Faktor: %.3f -> %.3f",
-                    self._learn_count, bucket_key, avg_std, estimated, total_time, old_factor, new_factor
+                    "AUTO-LEARN #%d: Geschaetzt=%.1fL (soll 10L), Korrektur=%.3f, Zeit=%.0fs | %s",
+                    self._learn_count, estimated, correction, total_time, ", ".join(buckets_learned)
                 )
-
-                # Persistieren
-                persist_data = {
-                    bucket_key: new_factor,
-                    f"{bucket_key}_count": self._bucket_counts[bucket_key],
-                    "learn_count": self._learn_count,
-                }
-                for bkey in self._bucket_times:
-                    persist_data[f"{bkey}_time"] = self._bucket_times[bkey]
 
                 self.hass.async_create_task(self._persist_options(persist_data))
 
