@@ -74,6 +74,10 @@ class WasserVibrationController:
         self._last_flow_time = None
         self._current_liter_mark = 0
 
+        # Rate-Limiting: Nur alle 2 Sekunden Entities updaten (statt alle 500ms)
+        self._last_notify_time = 0.0
+        self._notify_interval = 2.0  # Sekunden
+
         self._remove_vibration_listener = None
         self._remove_total_listener = None
 
@@ -217,7 +221,7 @@ class WasserVibrationController:
         self._volume_since_tick = 0.0
         self._std_samples_since_tick = []
         _LOGGER.info("Residuum reset: Offset = %.3f L", self._offset_l)
-        self._notify_entities()
+        self._notify_entities(force=True)  # Sofort updaten bei Reset
 
     def _integrate(self, flow_l_min: float, dt_s: float):
         if dt_s <= 0 or flow_l_min <= 0:
@@ -257,7 +261,7 @@ class WasserVibrationController:
                 self._offset_l = rounded_volume
                 self._last_hydrus_total = now_total_l
                 self._volume_since_tick = 0.0
-            self._notify_entities()
+            self._notify_entities(force=True)  # Sofort bei Initialisierung
             return
 
         # 10L-Tick Erkennung -> AUTO-LEARNING!
@@ -292,6 +296,7 @@ class WasserVibrationController:
             self._volume_since_tick = 0.0
             self._std_samples_since_tick = []
             self._last_hydrus_change_time = time.time()
+            self._notify_entities(force=True)  # Sofort nach Auto-Learn
 
         elif 10.5 < delta_l <= 100.0:
             _LOGGER.info("Hydrus Sprung %.1f L, sync", delta_l)
@@ -301,7 +306,7 @@ class WasserVibrationController:
             self._std_samples_since_tick = []
 
         self._last_hydrus_total = now_total_l
-        self._notify_entities()
+        self._notify_entities(force=True)  # Hydrus-Änderung immer sofort anzeigen
 
     @callback
     def _on_vibration_entity_changed(self, event: Event) -> None:
@@ -354,8 +359,17 @@ class WasserVibrationController:
         self._current_liter_mark = self._get_liter_mark(self.residuum_l)
         self._notify_entities()
 
-    def _notify_entities(self) -> None:
+    def _notify_entities(self, force: bool = False) -> None:
+        """Benachrichtigt Entities - mit Rate-Limiting um HA nicht zu ueberlasten."""
+        now = time.time()
+
+        # Rate-Limiting: Nur alle 2 Sekunden updaten (ausser bei force)
+        if not force and (now - self._last_notify_time) < self._notify_interval:
+            return
+
+        self._last_notify_time = now
         self.hass.data[DOMAIN][self.entry.entry_id][DATA_CTRL] = self
+
         for cb in self.__dict__.get("_entity_listeners", []):
             try:
                 cb()
