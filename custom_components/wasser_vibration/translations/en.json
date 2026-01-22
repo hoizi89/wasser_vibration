@@ -1,0 +1,54 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Setup Water Vibration",
+        "description": "Configure vibration-based water flow detection with 10L marks.",
+        "data": {
+          "name": "Name",
+          "vibration_entity": "Vibration Sensor (Y-Std)",
+          "total_entity": "Water Meter (optional)",
+          "total_unit": "Water Meter Unit"
+        },
+        "data_description": {
+          "name": "Name for this integration (e.g. 'Main Pipe Vibration')",
+          "vibration_entity": "ESPHome sensor 'Vibration Y-Std' from ADXL345",
+          "total_entity": "Optional: Hydrus water meter for auto-reset at 10L tick",
+          "total_unit": "Select L if your meter counts in Liters, m3 for cubic meters"
+        }
+      }
+    },
+    "error": {
+      "unknown": "An unknown error occurred"
+    },
+    "abort": {
+      "already_configured": "This integration is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Calibration",
+        "description": "Adjust the thresholds for vibration detection to match your installation.",
+        "data": {
+          "vibration_entity": "Vibration Sensor",
+          "total_entity": "Water Meter",
+          "total_unit": "Unit",
+          "std_threshold": "Threshold (m/s2)",
+          "std_max": "Std at Max Flow (m/s2)",
+          "flow_max": "Max Flow (L/min)",
+          "max_residuum_l": "Max Residuum (L)"
+        },
+        "data_description": {
+          "vibration_entity": "ESPHome sensor 'Vibration Y-Std' from ADXL345",
+          "total_entity": "Optional: Hydrus water meter for auto-reset",
+          "total_unit": "Water meter unit",
+          "std_threshold": "Below this value = no water (default: 0.046)",
+          "std_max": "At this std value max flow is assumed (default: 0.065)",
+          "flow_max": "Maximum flow at std_max (default: 15 L/min)",
+          "max_residuum_l": "Upper limit for residuum (default: 10L)"
+        }
+      }
+    }
+  }
+}

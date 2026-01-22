@@ -1,0 +1,54 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Wasser-Vibration einrichten",
+        "description": "Konfiguriere die Integration zur Vibrations-basierten Wassererkennung mit 10L-Marken.",
+        "data": {
+          "name": "Name",
+          "vibration_entity": "Vibrations-Sensor (Y-Std)",
+          "total_entity": "Wasserzaehler (optional)",
+          "total_unit": "Einheit des Wasserzaehlers"
+        },
+        "data_description": {
+          "name": "Name fuer diese Integration (z.B. 'Hauptleitung-Vibration')",
+          "vibration_entity": "ESPHome Sensor 'Vibration Y-Std' vom ADXL345",
+          "total_entity": "Optional: Hydrus Wasserzaehler fuer Auto-Reset bei 10L-Tick",
+          "total_unit": "Waehle L wenn dein Zaehler in Litern zaehlt, m3 wenn in Kubikmetern"
+        }
+      }
+    },
+    "error": {
+      "unknown": "Ein unbekannter Fehler ist aufgetreten"
+    },
+    "abort": {
+      "already_configured": "Diese Integration wurde bereits konfiguriert"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Kalibrierung",
+        "description": "Passe die Schwellwerte fuer die Vibrations-Erkennung an deine Installation an.",
+        "data": {
+          "vibration_entity": "Vibrations-Sensor",
+          "total_entity": "Wasserzaehler",
+          "total_unit": "Einheit",
+          "std_threshold": "Schwellwert (m/s2)",
+          "std_max": "Std bei Max-Flow (m/s2)",
+          "flow_max": "Max Flow (L/min)",
+          "max_residuum_l": "Max Residuum (L)"
+        },
+        "data_description": {
+          "vibration_entity": "ESPHome Sensor 'Vibration Y-Std' vom ADXL345",
+          "total_entity": "Optional: Hydrus Wasserzaehler fuer Auto-Reset",
+          "total_unit": "Einheit des Wasserzaehlers",
+          "std_threshold": "Unterhalb dieses Werts = kein Wasser (Standard: 0.046)",
+          "std_max": "Bei diesem Std-Wert wird max Flow angenommen (Standard: 0.065)",
+          "flow_max": "Maximaler Flow bei std_max (Standard: 15 L/min)",
+          "max_residuum_l": "Obergrenze fuer das Residuum (Standard: 10L)"
+        }
+      }
+    }
+  }
+}
