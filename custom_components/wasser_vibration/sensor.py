@@ -18,6 +18,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         # Haupt-Sensoren
         FlowSensor(ctrl, name),
         VolumeSensor(ctrl, name),
+        TotalSensor(ctrl, name),  # NEU: Kumuliertes Gesamt-Volumen
         ResiduumSensor(ctrl, name),
         FlowStatusSensor(ctrl, name),
         # Auto-Learning Status
@@ -117,6 +118,41 @@ class VolumeSensor(BaseEntity, RestoreEntity):
         }
 
 
+class TotalSensor(BaseEntity, RestoreEntity):
+    """Kumuliertes Gesamt-Volumen (persistent)."""
+    def __init__(self, ctrl, name: str):
+        super().__init__(
+            ctrl, name, "Total",
+            unit="L",
+            icon="mdi:water-sync",
+            state_class=SensorStateClass.TOTAL_INCREASING,
+            device_class=SensorDeviceClass.WATER,
+        )
+        self._total_volume = 0.0
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+        if last_state and last_state.state not in ("unknown", "unavailable"):
+            try:
+                self._total_volume = float(last_state.state)
+            except (ValueError, TypeError):
+                pass
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> float | None:
+        # Gesamt = persistierter Wert + aktuelle Session
+        return round(self._total_volume + self.ctrl.volume_l, 2)
+
+    @property
+    def extra_state_attributes(self):
+        return {
+            "session_volume_l": round(self.ctrl.volume_l, 2),
+            "learn_count": self.ctrl.learn_count,
+        }
+
+
 class ResiduumSensor(BaseEntity):
     """Residuum = Volume - Offset."""
     def __init__(self, ctrl, name: str):
@@ -209,22 +245,25 @@ class AutoLearnSensor(BaseEntity):
 
     @property
     def extra_state_attributes(self):
-        # Bucket-Faktoren lesbar machen
-        bucket_info = {}
-        for key, factor in self.ctrl.bucket_factors.items():
-            count = self.ctrl.bucket_counts.get(key, 0)
-            # "bucket_0.050" -> "schwach (0.050)"
-            std_val = key.replace("bucket_", "")
-            bucket_info[f"factor_{std_val}"] = round(factor, 3)
-            bucket_info[f"count_{std_val}"] = count
+        # Bucket-Infos detailliert aufbereiten
+        bucket_details = {}
+        all_buckets = self.ctrl.get_all_bucket_info()
+
+        for info in all_buckets:
+            label = info["label"]
+            bucket_details[f"{label}_factor"] = round(info["factor"], 3)
+            bucket_details[f"{label}_count"] = info["count"]
+            bucket_details[f"{label}_zeit_min"] = round(info["time_s"] / 60.0, 1)
+            bucket_details[f"{label}_schwelle"] = round(info["abs_threshold"], 4)
 
         attrs = {
             "learn_count": self.ctrl.learn_count,
-            "current_bucket": self.ctrl.current_bucket,
+            "current_bucket": self.ctrl.current_bucket_label,
+            "threshold": self.ctrl.std_threshold,
             "is_calibrated": self.ctrl.is_calibrated,
-            "info": "Multi-Punkt Lernen: Verschiedene Faktoren fuer schwachen/starken Fluss",
+            "info": "Buckets: schwach -> stark (relativ zur Schwelle)",
         }
-        attrs.update(bucket_info)
+        attrs.update(bucket_details)
         return attrs
 
 

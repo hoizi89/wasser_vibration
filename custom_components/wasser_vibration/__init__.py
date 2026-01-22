@@ -23,10 +23,13 @@ _LOGGER = logging.getLogger(__name__)
 STD_HISTORY_SIZE = 10
 OUTLIER_THRESHOLD = 3.0
 
-# Multi-Punkt Learning: Std-Bereiche mit eigenen Faktoren
-# Format: {std_bucket: (factor, learn_count)}
-STD_BUCKETS = [0.050, 0.055, 0.060, 0.070, 0.100]  # Grenzen der Buckets
+# Multi-Punkt Learning: Relative Offsets zur Schwelle
+# Bucket 0 = "schwach" (knapp ueber Schwelle), Bucket 4 = "sehr stark"
+BUCKET_OFFSETS = [0.000, 0.005, 0.010, 0.020, 0.050]  # Offsets relativ zur Schwelle
 DEFAULT_BUCKET_FACTOR = 1.0
+
+# Persistierter Key fuer die letzte verwendete Schwelle (fuer Reset-Erkennung)
+KEY_LAST_THRESHOLD = "last_threshold"
 
 
 def _m3_to_l(v: float) -> float:
@@ -47,14 +50,34 @@ class WasserVibrationController:
         self.std_threshold = entry.options.get(CONF_STD_THRESHOLD, DEFAULT_STD_THRESHOLD)
         self.max_res_l = entry.options.get(CONF_MAX_RES_L, DEFAULT_MAX_RES_L)
 
-        # Multi-Punkt Learning: Faktoren pro Std-Bereich
-        # Gespeichert als: {"bucket_0.050": 1.0, "bucket_0.055": 1.2, ...}
+        # Pruefen ob Schwelle geaendert wurde -> Reset der Lernwerte
+        last_threshold = entry.options.get(KEY_LAST_THRESHOLD, self.std_threshold)
+        threshold_changed = abs(last_threshold - self.std_threshold) > 0.0001
+
+        # Multi-Punkt Learning: Faktoren pro Std-Bereich (relativ zur Schwelle)
+        # Buckets sind: schwelle+0.000, schwelle+0.005, schwelle+0.010, schwelle+0.020, schwelle+0.050
         self._bucket_factors = {}
         self._bucket_counts = {}
-        for bucket in STD_BUCKETS:
-            key = f"bucket_{bucket:.3f}"
-            self._bucket_factors[key] = entry.options.get(key, DEFAULT_BUCKET_FACTOR)
-            self._bucket_counts[key] = entry.options.get(f"{key}_count", 0)
+        self._bucket_times = {}  # Zeit in Sekunden pro Bucket
+
+        for i, offset in enumerate(BUCKET_OFFSETS):
+            key = f"bucket_{i}"  # bucket_0 = schwach, bucket_4 = sehr stark
+            if threshold_changed:
+                # Bei Schwellenänderung: Reset auf Defaults
+                self._bucket_factors[key] = DEFAULT_BUCKET_FACTOR
+                self._bucket_counts[key] = 0
+                self._bucket_times[key] = 0.0
+            else:
+                self._bucket_factors[key] = entry.options.get(key, DEFAULT_BUCKET_FACTOR)
+                self._bucket_counts[key] = entry.options.get(f"{key}_count", 0)
+                self._bucket_times[key] = entry.options.get(f"{key}_time", 0.0)
+
+        # Schwelle speichern fuer naechsten Start
+        if threshold_changed:
+            _LOGGER.info("Schwelle geaendert: %.4f -> %.4f - Lernwerte zurueckgesetzt!",
+                        last_threshold, self.std_threshold)
+            self._learn_count = 0
+            hass.async_create_task(self._persist_options({KEY_LAST_THRESHOLD: self.std_threshold}))
 
         # Fallback: Globaler Faktor (für Kompatibilität)
         self.cal_factor = entry.options.get(CONF_CAL_FACTOR, DEFAULT_CAL_FACTOR)
@@ -77,7 +100,13 @@ class WasserVibrationController:
 
         # Auto-Learning: Std-Werte seit letztem Tick sammeln
         self._std_samples_since_tick = []
-        self._learn_count = 0  # Anzahl erfolgreicher Lern-Zyklen
+        self._time_per_bucket_since_tick = {}  # Zeit pro Bucket seit letztem Tick
+        self._last_bucket_time = None  # Timestamp des letzten Bucket-Wechsels
+        self._current_bucket_key = None
+        if not threshold_changed:
+            self._learn_count = entry.options.get("learn_count", 0)
+        else:
+            self._learn_count = 0
 
         # Flow-Status
         self._flow_active = False
@@ -93,11 +122,31 @@ class WasserVibrationController:
         self._remove_total_listener = None
 
     def _get_bucket_key(self, std: float) -> str:
-        """Findet den passenden Bucket für einen Std-Wert."""
-        for bucket in STD_BUCKETS:
-            if std <= bucket:
-                return f"bucket_{bucket:.3f}"
-        return f"bucket_{STD_BUCKETS[-1]:.3f}"
+        """Findet den passenden Bucket fuer einen Std-Wert (relativ zur Schwelle)."""
+        delta = std - self.std_threshold
+        for i, offset in enumerate(BUCKET_OFFSETS):
+            if delta <= offset:
+                return f"bucket_{i}"
+        return f"bucket_{len(BUCKET_OFFSETS)-1}"
+
+    def _get_bucket_info(self, bucket_key: str) -> dict:
+        """Gibt detaillierte Infos zu einem Bucket zurueck."""
+        bucket_idx = int(bucket_key.split("_")[1])
+        offset = BUCKET_OFFSETS[bucket_idx]
+        abs_threshold = self.std_threshold + offset
+
+        labels = ["schwach", "mittel-schwach", "mittel", "mittel-stark", "stark"]
+        label = labels[bucket_idx] if bucket_idx < len(labels) else "unbekannt"
+
+        return {
+            "index": bucket_idx,
+            "label": label,
+            "offset": offset,
+            "abs_threshold": abs_threshold,
+            "factor": self._bucket_factors.get(bucket_key, DEFAULT_BUCKET_FACTOR),
+            "count": self._bucket_counts.get(bucket_key, 0),
+            "time_s": self._bucket_times.get(bucket_key, 0.0),
+        }
 
     def _get_bucket_factor(self, std: float) -> float:
         """Holt den gelernten Faktor für einen Std-Bereich."""
@@ -244,11 +293,33 @@ class WasserVibrationController:
         return self._bucket_counts.copy()
 
     @property
+    def bucket_times(self) -> dict:
+        """Gibt akkumulierte Zeit pro Bucket zurueck."""
+        return self._bucket_times.copy()
+
+    @property
     def current_bucket(self) -> str:
         """Aktueller Bucket basierend auf letztem Std."""
-        if self._last_std is None:
+        if self._last_std is None or self._last_std <= self.std_threshold:
             return "none"
         return self._get_bucket_key(self._last_std)
+
+    @property
+    def current_bucket_label(self) -> str:
+        """Lesbare Bezeichnung des aktuellen Buckets."""
+        bucket = self.current_bucket
+        if bucket == "none":
+            return "Kein Wasser"
+        info = self._get_bucket_info(bucket)
+        return info["label"]
+
+    def get_all_bucket_info(self) -> list:
+        """Gibt detaillierte Infos zu allen Buckets zurueck."""
+        result = []
+        for i in range(len(BUCKET_OFFSETS)):
+            key = f"bucket_{i}"
+            result.append(self._get_bucket_info(key))
+        return result
 
     def register_entity_listener(self, cb) -> None:
         self.__dict__.setdefault("_entity_listeners", []).append(cb)
@@ -326,24 +397,35 @@ class WasserVibrationController:
                 self._bucket_counts[bucket_key] = self._bucket_counts.get(bucket_key, 0) + 1
                 self._learn_count += 1
 
+                # Zeit-Stats akkumulieren
+                for bkey, btime in self._time_per_bucket_since_tick.items():
+                    self._bucket_times[bkey] = self._bucket_times.get(bkey, 0.0) + btime
+
+                total_time = sum(self._time_per_bucket_since_tick.values())
                 _LOGGER.info(
-                    "AUTO-LEARN #%d [%s]: Avg-Std=%.4f, Geschaetzt=%.1fL, Faktor: %.3f -> %.3f",
-                    self._learn_count, bucket_key, avg_std, estimated, old_factor, new_factor
+                    "AUTO-LEARN #%d [%s]: Avg-Std=%.4f, Geschaetzt=%.1fL, Zeit=%.1fs, Faktor: %.3f -> %.3f",
+                    self._learn_count, bucket_key, avg_std, estimated, total_time, old_factor, new_factor
                 )
 
                 # Persistieren
-                self.hass.async_create_task(
-                    self._persist_options({
-                        bucket_key: new_factor,
-                        f"{bucket_key}_count": self._bucket_counts[bucket_key],
-                    })
-                )
+                persist_data = {
+                    bucket_key: new_factor,
+                    f"{bucket_key}_count": self._bucket_counts[bucket_key],
+                    "learn_count": self._learn_count,
+                }
+                for bkey in self._bucket_times:
+                    persist_data[f"{bkey}_time"] = self._bucket_times[bkey]
+
+                self.hass.async_create_task(self._persist_options(persist_data))
 
             # Reset fuer naechsten Tick
             self._offset_l = now_total_l
             self._volume_l = now_total_l
             self._volume_since_tick = 0.0
             self._std_samples_since_tick = []
+            self._time_per_bucket_since_tick = {}
+            self._current_bucket_key = None
+            self._last_bucket_time = None
             self._last_hydrus_change_time = time.time()
             self._notify_entities(force=True)  # Sofort nach Auto-Learn
 
@@ -378,9 +460,23 @@ class WasserVibrationController:
 
         self._last_std = filtered_std
 
-        # Std-Werte sammeln fuer Auto-Learning
+        # Std-Werte und Zeit sammeln fuer Auto-Learning
         if filtered_std > self.std_threshold:
             self._std_samples_since_tick.append(filtered_std)
+
+            # Zeit-Tracking pro Bucket
+            new_bucket = self._get_bucket_key(filtered_std)
+            if self._last_bucket_time is not None and self._current_bucket_key is not None:
+                elapsed = now_ts - self._last_bucket_time
+                if elapsed > 0 and elapsed < 60:  # Max 60s pro Sample
+                    self._time_per_bucket_since_tick[self._current_bucket_key] = \
+                        self._time_per_bucket_since_tick.get(self._current_bucket_key, 0.0) + elapsed
+            self._current_bucket_key = new_bucket
+            self._last_bucket_time = now_ts
+        else:
+            # Kein Flow - Reset Zeit-Tracking
+            self._current_bucket_key = None
+            self._last_bucket_time = None
 
         # Flow berechnen
         flow = self._std_to_flow(filtered_std)
@@ -441,6 +537,14 @@ class WasserVibrationController:
             self._remove_total_listener = self.hass.bus.async_listen(
                 EVENT_STATE_CHANGED, total_listener
             )
+            # Aktuellen Hydrus-Wert sofort lesen (nicht auf Tick warten)
+            state = self.hass.states.get(self.total_entity)
+            if state and state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+                try:
+                    self._last_hydrus_total = self._convert_total_to_l(float(state.state))
+                    _LOGGER.info("Hydrus Initialwert: %.2f L", self._last_hydrus_total)
+                except (ValueError, TypeError):
+                    pass
 
     async def async_stop(self):
         if self._remove_vibration_listener:

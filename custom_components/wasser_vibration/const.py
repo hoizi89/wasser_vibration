@@ -31,7 +31,7 @@ CONF_CAL_FACTOR: Final[str] = "cal_factor"        # Korrektur-Faktor (auto-lernt
 
 # --- Defaults -----------------------------------------------------------------
 DEFAULT_NAME: Final[str] = "Wasser Vibration"
-DEFAULT_STD_THRESHOLD: Final[float] = 0.048  # Unterhalb = kein Wasser (m/s2)
+DEFAULT_STD_THRESHOLD: Final[float] = 0.050  # Unterhalb = kein Wasser (m/s2)
 DEFAULT_MAX_RES_L: Final[float] = 10.0
 DEFAULT_TOTAL_UNIT: Final[str] = "L"
 
