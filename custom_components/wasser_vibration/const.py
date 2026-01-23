@@ -50,7 +50,7 @@ RANGE_MAX_RES: Final[dict] = {"min": 5.0, "max": 50.0, "step": 1.0}
 
 # --- Kalibrierungs-Konstanten -------------------------------------------------
 CAL_ADAPT_RATE: Final[float] = 0.15  # 15% Anpassung pro 10L-Tick (sanft lernen)
-CAL_MIN_FACTOR: Final[float] = 0.5   # Minimaler Korrektur-Faktor
+CAL_MIN_FACTOR: Final[float] = 0.05  # Minimaler Korrektur-Faktor
 CAL_MAX_FACTOR: Final[float] = 2.0   # Maximaler Korrektur-Faktor
 
 # --- 10L Marken ---------------------------------------------------------------
