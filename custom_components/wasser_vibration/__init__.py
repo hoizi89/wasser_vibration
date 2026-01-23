@@ -345,10 +345,10 @@ class WasserVibrationController:
 
     @property
     def recommended_threshold(self) -> float | None:
-        """Empfohlene Schwelle basierend auf Baseline + 15%."""
+        """Empfohlene Schwelle basierend auf Baseline + 10%."""
         if self._baseline_max is None:
             return None
-        return round(self._baseline_max * 1.15, 4)
+        return round(self._baseline_max * 1.10, 4)
 
     def register_entity_listener(self, cb) -> None:
         self._entity_listeners.append(cb)

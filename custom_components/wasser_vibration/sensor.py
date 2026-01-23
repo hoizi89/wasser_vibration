@@ -247,7 +247,7 @@ class BucketInfoSensor(BaseEntity):
         threshold = self.ctrl.std_threshold
 
         attrs = {
-            "schwelle": round(threshold, 4),
+            "schwelle": f"{threshold:.4f}",
             "aktuell": self.ctrl.current_bucket_label,
         }
 
@@ -266,9 +266,9 @@ class BucketInfoSensor(BaseEntity):
             von = threshold + BUCKET_OFFSETS[i]
             if i < len(BUCKET_OFFSETS) - 1:
                 bis = threshold + BUCKET_OFFSETS[i + 1]
-                bereich = f"{von:.3f}-{bis:.3f}"
+                bereich = f"{von:.4f}-{bis:.4f}"
             else:
-                bereich = f"{von:.3f}+"
+                bereich = f"{von:.4f}+"
 
             # Kompakte Info: Bereich | Faktor | Lern-Zyklen | Zeit
             attrs[f"{i}_{label}"] = f"{bereich} | F={info['factor']:.2f} | {info['count']}x | {info['time_s']:.0f}s"
