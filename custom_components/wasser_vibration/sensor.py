@@ -306,13 +306,26 @@ class DiagVibrationStd(BaseEntity):
         raw = self.ctrl.last_std_raw or 0.0
         threshold = self.ctrl.std_threshold
 
-        return {
+        attrs = {
             "raw_std": round(raw, 4),
-            "threshold": round(threshold, 4),
-            "above_threshold": std > threshold,
-            "delta_to_threshold": round(std - threshold, 4),
+            "schwelle": round(threshold, 4),
+            "ueber_schwelle": std > threshold,
+            "delta_zu_schwelle": round(std - threshold, 4),
             "outliers_rejected": self.ctrl.outliers_rejected,
         }
+
+        # Baseline-Debug-Werte (Ruhezustand)
+        if self.ctrl.baseline_min is not None:
+            attrs["_baseline"] = "──────────────────"
+            attrs["baseline_min"] = round(self.ctrl.baseline_min, 4)
+            attrs["baseline_max"] = round(self.ctrl.baseline_max, 4)
+            attrs["baseline_avg"] = round(self.ctrl.baseline_avg, 4)
+            attrs["empfohlene_schwelle"] = self.ctrl.recommended_threshold
+            # Puffer zur aktuellen Schwelle
+            puffer = threshold - self.ctrl.baseline_max
+            attrs["puffer_zu_max"] = round(puffer, 4)
+
+        return attrs
 
 
 class DiagHydrusTotal(BaseEntity):

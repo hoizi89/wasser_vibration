@@ -90,6 +90,12 @@ class WasserVibrationController:
         self._std_history = deque(maxlen=STD_HISTORY_SIZE)
         self._outliers_rejected = 0
 
+        # Baseline-Tracking (Ruhezustand ohne Wasser)
+        self._baseline_samples = deque(maxlen=120)  # Letzte 60s bei 500ms Update
+        self._baseline_min = None
+        self._baseline_max = None
+        self._baseline_avg = None
+
         # Auto-Learning: Std-Werte seit letztem Tick sammeln
         self._std_samples_since_tick = []
         self._time_per_bucket_since_tick = {}  # Zeit pro Bucket seit letztem Tick
@@ -322,6 +328,28 @@ class WasserVibrationController:
         """Zeit pro Bucket seit dem letzten Hydrus-Tick (Sekunden)."""
         return self._time_per_bucket_since_tick.copy()
 
+    @property
+    def baseline_min(self) -> float | None:
+        """Minimaler Std-Wert im Ruhezustand."""
+        return self._baseline_min
+
+    @property
+    def baseline_max(self) -> float | None:
+        """Maximaler Std-Wert im Ruhezustand."""
+        return self._baseline_max
+
+    @property
+    def baseline_avg(self) -> float | None:
+        """Durchschnittlicher Std-Wert im Ruhezustand."""
+        return self._baseline_avg
+
+    @property
+    def recommended_threshold(self) -> float | None:
+        """Empfohlene Schwelle basierend auf Baseline + 15%."""
+        if self._baseline_max is None:
+            return None
+        return round(self._baseline_max * 1.15, 4)
+
     def register_entity_listener(self, cb) -> None:
         self._entity_listeners.append(cb)
 
@@ -541,6 +569,14 @@ class WasserVibrationController:
             # Kein Flow - Reset Zeit-Tracking
             self._current_bucket_key = None
             self._last_bucket_time = None
+
+            # Baseline-Tracking (nur bei Ruhe)
+            self._baseline_samples.append(filtered_std)
+            if len(self._baseline_samples) >= 10:
+                samples = list(self._baseline_samples)
+                self._baseline_min = min(samples)
+                self._baseline_max = max(samples)
+                self._baseline_avg = sum(samples) / len(samples)
 
         # Flow berechnen
         flow = self._std_to_flow(filtered_std)
