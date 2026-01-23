@@ -307,23 +307,23 @@ class DiagVibrationStd(BaseEntity):
         threshold = self.ctrl.std_threshold
 
         attrs = {
-            "raw_std": round(raw, 4),
-            "schwelle": round(threshold, 4),
+            "raw_std": f"{raw:.4f}",
+            "schwelle": f"{threshold:.4f}",
             "ueber_schwelle": std > threshold,
-            "delta_zu_schwelle": round(std - threshold, 4),
+            "delta_zu_schwelle": f"{std - threshold:.4f}",
             "outliers_rejected": self.ctrl.outliers_rejected,
         }
 
         # Baseline-Debug-Werte (Ruhezustand)
         if self.ctrl.baseline_min is not None:
             attrs["_baseline"] = "──────────────────"
-            attrs["baseline_min"] = round(self.ctrl.baseline_min, 4)
-            attrs["baseline_max"] = round(self.ctrl.baseline_max, 4)
-            attrs["baseline_avg"] = round(self.ctrl.baseline_avg, 4)
-            attrs["empfohlene_schwelle"] = self.ctrl.recommended_threshold
+            attrs["baseline_min"] = f"{self.ctrl.baseline_min:.4f}"
+            attrs["baseline_max"] = f"{self.ctrl.baseline_max:.4f}"
+            attrs["baseline_avg"] = f"{self.ctrl.baseline_avg:.4f}"
+            attrs["empfohlene_schwelle"] = f"{self.ctrl.recommended_threshold:.4f}"
             # Puffer zur aktuellen Schwelle
             puffer = threshold - self.ctrl.baseline_max
-            attrs["puffer_zu_max"] = round(puffer, 4)
+            attrs["puffer_zu_max"] = f"{puffer:.4f}"
 
         return attrs
 
