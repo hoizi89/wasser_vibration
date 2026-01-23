@@ -362,7 +362,18 @@ class WasserVibrationController:
             if getattr(self, "_restored_volume", False):
                 self._last_hydrus_total = now_total_l
                 self._last_hydrus_total_at_restore = now_total_l
-                if self._offset_l > now_total_l:
+
+                # FIX: Wenn Volume < Hydrus (z.B. Tick waehrend HA aus war), synchronisieren
+                if self._volume_l < now_total_l:
+                    _LOGGER.warning(
+                        "Neustart: Volume (%.2f) < Hydrus (%.2f), synchronisiere auf Hydrus",
+                        self._volume_l, now_total_l
+                    )
+                    self._volume_l = now_total_l
+                    self._offset_l = now_total_l
+                    self._volume_since_tick = 0.0
+                    self._skip_next_learn = True  # Sicherheitshalber skippen
+                elif self._offset_l > now_total_l:
                     self._offset_l = now_total_l
 
                 # NEU: Wenn volume_since_tick wiederhergestellt wurde, pruefen ob konsistent
