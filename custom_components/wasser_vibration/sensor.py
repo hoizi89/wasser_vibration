@@ -202,6 +202,8 @@ class AutoLearnSensor(BaseEntity):
             "learn_count": self.ctrl.learn_count,
             "threshold": round(self.ctrl.std_threshold, 4),
             "is_calibrated": self.ctrl.is_calibrated,
+            "skip_next_learn": getattr(self.ctrl, "_skip_next_learn", False),
+            "volume_since_tick": round(self.ctrl.volume_since_tick, 2),
             "info": "Lernt bei jedem 10L Hydrus-Tick automatisch",
         }
         return attrs
@@ -353,6 +355,19 @@ class DiagVolumeSensor(BaseEntity, RestoreEntity):
                 if self.ctrl._offset_l == 0.0 or self.ctrl._offset_l > self.ctrl._volume_l:
                     self.ctrl._offset_l = self.ctrl._volume_l
                 setattr(self.ctrl, "_restored_volume", True)
+
+                # NEU: volume_since_tick aus extra_state_attributes wiederherstellen
+                if last_state.attributes:
+                    vst = last_state.attributes.get("volume_since_tick")
+                    if vst is not None:
+                        try:
+                            restored_vst = float(vst)
+                            # Plausibilitaetspruefung
+                            if 0 <= restored_vst <= 15.0:
+                                self.ctrl._volume_since_tick = restored_vst
+                                self.ctrl._restored_volume_since_tick = True
+                        except (ValueError, TypeError):
+                            pass
             except (ValueError, TypeError):
                 pass
 
@@ -368,5 +383,6 @@ class DiagVolumeSensor(BaseEntity, RestoreEntity):
         return {
             "offset_l": round(self.ctrl.offset_l, 2),
             "volume_since_tick": round(self.ctrl.volume_since_tick, 2),
+            "skip_next_learn": getattr(self.ctrl, "_skip_next_learn", False),
             "info": "Interner Wert, wird bei Hydrus-Tick synchronisiert",
         }

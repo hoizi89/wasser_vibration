@@ -31,6 +31,12 @@ BUCKET_OFFSETS = [0.000, 0.005, 0.010, 0.020, 0.050]  # Offsets relativ zur Schw
 # Besser zu wenig schaetzen als zu viel - wird dann hochgelernt
 DEFAULT_BUCKET_FACTOR = 0.1
 
+# Mindest-Zeit pro Bucket fuer gewichtetes Lernen (Sekunden)
+MIN_BUCKET_TIME_FOR_LEARNING = 2.0
+
+# Mindest-Anteil der Gesamt-Zeit fuer Bucket-Lernen (20%)
+MIN_BUCKET_TIME_RATIO = 0.20
+
 
 def _m3_to_l(v: float) -> float:
     return v * 1000.0
@@ -88,6 +94,11 @@ class WasserVibrationController:
         self._last_bucket_time = None  # Timestamp des letzten Bucket-Wechsels
         self._current_bucket_key = None
         self._learn_count = entry.options.get("learn_count", 0)
+
+        # NEU: Flags fuer Neustart-Handling
+        self._skip_next_learn = False  # Erstes Lernen nach Neustart ueberspringen
+        self._restored_volume_since_tick = False  # Wurde volume_since_tick wiederhergestellt?
+        self._last_hydrus_total_at_restore = None  # Hydrus-Wert bei Restore
 
         # Flow-Status
         self._flow_active = False
@@ -350,8 +361,32 @@ class WasserVibrationController:
         if self._last_hydrus_total is None:
             if getattr(self, "_restored_volume", False):
                 self._last_hydrus_total = now_total_l
+                self._last_hydrus_total_at_restore = now_total_l
                 if self._offset_l > now_total_l:
                     self._offset_l = now_total_l
+
+                # NEU: Wenn volume_since_tick wiederhergestellt wurde, pruefen ob konsistent
+                if self._restored_volume_since_tick:
+                    # Plausibilitaetspruefung: volume_since_tick sollte < 10L sein
+                    if self._volume_since_tick > 10.0 or self._volume_since_tick < 0:
+                        _LOGGER.warning(
+                            "Neustart: volume_since_tick=%.2f unplausibel, setze auf 0",
+                            self._volume_since_tick
+                        )
+                        self._volume_since_tick = 0.0
+                        self._skip_next_learn = True
+                    else:
+                        _LOGGER.info(
+                            "Neustart: volume_since_tick=%.2f wiederhergestellt",
+                            self._volume_since_tick
+                        )
+                else:
+                    # volume_since_tick wurde NICHT wiederhergestellt -> erstes Lernen skippen
+                    _LOGGER.info(
+                        "Neustart: volume_since_tick nicht wiederhergestellt, "
+                        "ueberspringe naechsten Lern-Zyklus"
+                    )
+                    self._skip_next_learn = True
             else:
                 rounded_volume = (now_total_l // 10) * 10
                 self._volume_l = rounded_volume
@@ -366,43 +401,73 @@ class WasserVibrationController:
         if 9.5 <= delta_l <= 10.5:
             estimated = self._volume_since_tick
 
-            # NEUES LERNEN: Jeden Bucket separat lernen (proportional zur Zeit)
-            if estimated > 1.0 and self._time_per_bucket_since_tick:
+            # NEU: Skip-Logik nach Neustart
+            if self._skip_next_learn:
+                _LOGGER.info(
+                    "AUTO-LEARN: Ueberspringe ersten Zyklus nach Neustart (geschaetzt=%.1fL)",
+                    estimated
+                )
+                self._skip_next_learn = False
+            # NEUES LERNEN: Jeden Bucket separat lernen (GEWICHTET nach Zeit-Anteil)
+            elif estimated > 1.0 and self._time_per_bucket_since_tick:
                 # Gesamt-Korrektur: Soll 10L sein, haben aber X geschaetzt
                 correction = 10.0 / estimated
                 total_time = sum(self._time_per_bucket_since_tick.values())
 
-                # Jeden Bucket der aktiv war anpassen
-                persist_data = {"learn_count": self._learn_count + 1}
-                buckets_learned = []
+                # Sicherheits-Check: Plausibilitaetspruefung
+                if total_time < 5.0:
+                    _LOGGER.warning(
+                        "AUTO-LEARN: Zu wenig Zeit-Daten (%.1fs), ueberspringe Lernen",
+                        total_time
+                    )
+                elif correction < 0.3 or correction > 3.0:
+                    _LOGGER.warning(
+                        "AUTO-LEARN: Korrektur %.2f ausserhalb plausiblem Bereich (0.3-3.0), ueberspringe",
+                        correction
+                    )
+                else:
+                    # Jeden Bucket der aktiv war anpassen - GEWICHTET nach Zeit-Anteil
+                    persist_data = {"learn_count": self._learn_count + 1}
+                    buckets_learned = []
 
-                for bucket_key, bucket_time in self._time_per_bucket_since_tick.items():
-                    if bucket_time >= 1.0:  # Mindestens 1 Sekunde aktiv
-                        old_factor = self._bucket_factors.get(bucket_key, DEFAULT_BUCKET_FACTOR)
-                        target_factor = old_factor * correction
-                        new_factor = old_factor + CAL_ADAPT_RATE * (target_factor - old_factor)
-                        new_factor = max(CAL_MIN_FACTOR, min(CAL_MAX_FACTOR, new_factor))
+                    for bucket_key, bucket_time in self._time_per_bucket_since_tick.items():
+                        time_ratio = bucket_time / total_time if total_time > 0 else 0
 
-                        self._bucket_factors[bucket_key] = new_factor
-                        self._bucket_counts[bucket_key] = self._bucket_counts.get(bucket_key, 0) + 1
+                        # NEU: Nur Buckets mit genuegend Zeit-Anteil lernen
+                        if bucket_time >= MIN_BUCKET_TIME_FOR_LEARNING and time_ratio >= MIN_BUCKET_TIME_RATIO:
+                            old_factor = self._bucket_factors.get(bucket_key, DEFAULT_BUCKET_FACTOR)
 
-                        persist_data[bucket_key] = new_factor
-                        persist_data[f"{bucket_key}_count"] = self._bucket_counts[bucket_key]
+                            # GEWICHTETE Korrektur: Buckets mit mehr Zeit-Anteil
+                            # bekommen staerkere Korrektur
+                            weighted_adapt_rate = CAL_ADAPT_RATE * min(1.0, time_ratio * 2.0)
+                            target_factor = old_factor * correction
+                            new_factor = old_factor + weighted_adapt_rate * (target_factor - old_factor)
+                            new_factor = max(CAL_MIN_FACTOR, min(CAL_MAX_FACTOR, new_factor))
 
-                        buckets_learned.append(f"{bucket_key}({bucket_time:.0f}s): {old_factor:.3f}->{new_factor:.3f}")
+                            self._bucket_factors[bucket_key] = new_factor
+                            self._bucket_counts[bucket_key] = self._bucket_counts.get(bucket_key, 0) + 1
 
-                    # Zeit-Stats akkumulieren (auch wenn < 1s)
-                    self._bucket_times[bucket_key] = self._bucket_times.get(bucket_key, 0.0) + bucket_time
-                    persist_data[f"{bucket_key}_time"] = self._bucket_times[bucket_key]
+                            persist_data[bucket_key] = new_factor
+                            persist_data[f"{bucket_key}_count"] = self._bucket_counts[bucket_key]
 
-                self._learn_count += 1
+                            buckets_learned.append(
+                                f"{bucket_key}({bucket_time:.0f}s/{time_ratio*100:.0f}%): "
+                                f"{old_factor:.3f}->{new_factor:.3f}"
+                            )
 
-                _LOGGER.info(
-                    "AUTO-LEARN #%d: Geschaetzt=%.1fL (soll 10L), Korrektur=%.3f, Zeit=%.0fs | %s",
-                    self._learn_count, estimated, correction, total_time, ", ".join(buckets_learned)
-                )
+                        # Zeit-Stats akkumulieren (auch wenn nicht gelernt)
+                        self._bucket_times[bucket_key] = self._bucket_times.get(bucket_key, 0.0) + bucket_time
+                        persist_data[f"{bucket_key}_time"] = self._bucket_times[bucket_key]
 
-                self.hass.async_create_task(self._persist_options(persist_data))
+                    self._learn_count += 1
+
+                    _LOGGER.info(
+                        "AUTO-LEARN #%d: Geschaetzt=%.1fL (soll 10L), Korrektur=%.3f, Zeit=%.0fs | %s",
+                        self._learn_count, estimated, correction, total_time,
+                        ", ".join(buckets_learned) if buckets_learned else "keine Buckets qualifiziert"
+                    )
+
+                    self.hass.async_create_task(self._persist_options(persist_data))
 
             # Reset fuer naechsten Tick
             self._offset_l = now_total_l
