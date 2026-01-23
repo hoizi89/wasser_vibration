@@ -239,28 +239,48 @@ class BucketInfoSensor(BaseEntity):
 
     @property
     def extra_state_attributes(self):
+        from . import BUCKET_OFFSETS
+
         # Alle Bucket-Infos aufbereiten
         all_buckets = self.ctrl.get_all_bucket_info()
         time_since_tick = self.ctrl.time_per_bucket_since_tick
+        threshold = self.ctrl.std_threshold
 
         attrs = {
-            "threshold": round(self.ctrl.std_threshold, 4),
-            "current": self.ctrl.current_bucket_label,
+            "schwelle": round(threshold, 4),
+            "aktuell": self.ctrl.current_bucket_label,
         }
 
         # Gesamt-Zeit seit Tick
         total_since_tick = sum(time_since_tick.values())
         attrs["seit_tick_s"] = round(total_since_tick, 1)
 
-        for info in all_buckets:
+        # Bereiche mit Von-Bis Werten anzeigen
+        attrs["_bereiche"] = "──────────────────"
+        for i, info in enumerate(all_buckets):
             label = info["label"]
             bucket_key = f"bucket_{info['index']}"
             current_s = time_since_tick.get(bucket_key, 0.0)
 
-            # Kompakte Info: Faktor | Lern-Zyklen | Gesamt-Sekunden | AKTUELL seit Tick
-            attrs[f"{label}"] = f"F={info['factor']:.2f} | {info['count']}x | {info['time_s']:.0f}s | jetzt:{current_s:.0f}s"
+            # Bereich berechnen (von - bis)
+            von = threshold + BUCKET_OFFSETS[i]
+            if i < len(BUCKET_OFFSETS) - 1:
+                bis = threshold + BUCKET_OFFSETS[i + 1]
+                bereich = f"{von:.3f}-{bis:.3f}"
+            else:
+                bereich = f"{von:.3f}+"
 
-        attrs["legende"] = "F=Faktor | Lern-Zyklen | Gesamt | Aktuell seit Tick"
+            # Kompakte Info: Bereich | Faktor | Lern-Zyklen | Zeit
+            attrs[f"{i}_{label}"] = f"{bereich} | F={info['factor']:.2f} | {info['count']}x | {info['time_s']:.0f}s"
+
+        attrs["_lernstatus"] = "──────────────────"
+        for i, info in enumerate(all_buckets):
+            bucket_key = f"bucket_{info['index']}"
+            current_s = time_since_tick.get(bucket_key, 0.0)
+            if current_s > 0:
+                attrs[f"jetzt_{info['label']}"] = f"{current_s:.0f}s"
+
+        attrs["legende"] = "Bereich m/s² | Faktor | Lern-Zyklen | Gesamt-Zeit"
         return attrs
 
 

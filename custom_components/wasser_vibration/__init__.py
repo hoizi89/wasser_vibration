@@ -24,8 +24,10 @@ STD_HISTORY_SIZE = 10
 OUTLIER_THRESHOLD = 3.0
 
 # Multi-Punkt Learning: Relative Offsets zur Schwelle
-# Bucket 0 = "schwach" (knapp ueber Schwelle), Bucket 4 = "sehr stark"
-BUCKET_OFFSETS = [0.000, 0.005, 0.010, 0.020, 0.050]  # Offsets relativ zur Schwelle
+# Bucket 0 = "sehr schwach" (knapp ueber Schwelle), Bucket 4 = "sehr stark"
+# Feinere Aufteilung da Werte selten ueber 0.07 m/s² gehen
+# Bei Schwelle 0.046: 0.046, 0.049, 0.053, 0.060, 0.070
+BUCKET_OFFSETS = [0.000, 0.003, 0.007, 0.014, 0.024]  # Offsets relativ zur Schwelle
 
 # WICHTIG: Default-Faktor auf 0.1 (konservativ) statt 1.0
 # Besser zu wenig schaetzen als zu viel - wird dann hochgelernt
@@ -129,7 +131,7 @@ class WasserVibrationController:
         offset = BUCKET_OFFSETS[bucket_idx]
         abs_threshold = self.std_threshold + offset
 
-        labels = ["schwach", "mittel-schwach", "mittel", "mittel-stark", "stark"]
+        labels = ["sehr schwach", "schwach", "mittel", "stark", "sehr stark"]
         label = labels[bucket_idx] if bucket_idx < len(labels) else "unbekannt"
 
         return {
