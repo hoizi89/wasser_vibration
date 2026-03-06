@@ -1,0 +1,184 @@
+# ESPHome ADXL345 - Vibration sensor for water flow detection
+# Sends Y-axis standard deviation to Home Assistant
+# Flow calculation + calibration happens in the HA integration "wasser_vibration"
+#
+# Typical values: OFF ~0.041, ON ~0.052 (+26%)
+
+esphome:
+  name: wasser-vibration
+  friendly_name: Wasser Vibration
+  on_boot:
+    priority: 200
+    then:
+      - delay: 100ms
+      - lambda: |-
+          uint8_t cmd[2];
+          // Power on, measurement mode
+          cmd[0] = 0x2D; cmd[1] = 0x08;
+          id(i2c_bus).write(0x53, cmd, 2);
+          // Full resolution, +/-16g
+          cmd[0] = 0x31; cmd[1] = 0x08;
+          id(i2c_bus).write(0x53, cmd, 2);
+          // 400 Hz data rate
+          cmd[0] = 0x2C; cmd[1] = 0x0C;
+          id(i2c_bus).write(0x53, cmd, 2);
+          ESP_LOGI("adxl", "ADXL345 init OK");
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  power_save_mode: none      # Keep WiFi always active
+  fast_connect: true         # Faster connection (skip scan)
+  reboot_timeout: 5min       # Reboot if offline for 5min
+  # Optional: static IP for faster connection
+  # manual_ip:
+  #   static_ip: 192.168.1.100
+  #   gateway: 192.168.1.1
+  #   subnet: 255.255.255.0
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+  reboot_timeout: 5min
+
+ota:
+  platform: esphome
+  password: !secret ota_password
+
+logger:
+  level: WARN
+
+# Web server for monitoring + debug page
+web_server:
+  port: 80
+
+i2c:
+  id: i2c_bus
+  sda: GPIO21
+  scl: GPIO22
+  scan: true
+  frequency: 400kHz
+
+globals:
+  - id: sample_count
+    type: int
+    initial_value: '0'
+  # Y-axis (best sensitivity for pipe vibration)
+  - id: sum_y
+    type: float
+    initial_value: '0.0'
+  - id: sum_y_sq
+    type: float
+    initial_value: '0.0'
+  - id: std_y
+    type: float
+    initial_value: '0.041'
+  # Data collection mode
+  - id: collecting_data
+    type: bool
+    initial_value: 'false'
+  - id: collect_count
+    type: int
+    initial_value: '0'
+
+interval:
+  # Read ADXL345 every 10ms (~100 Hz)
+  - interval: 10ms
+    then:
+      - lambda: |-
+          uint8_t reg = 0x32;
+          uint8_t data[6];
+          if (id(i2c_bus).write(0x53, &reg, 1, false) != i2c::ERROR_OK) return;
+          if (id(i2c_bus).read(0x53, data, 6) != i2c::ERROR_OK) return;
+
+          int16_t x = data[0] | (data[1] << 8);
+          int16_t y = data[2] | (data[3] << 8);
+          int16_t z = data[4] | (data[5] << 8);
+
+          float ax = x * 0.0039f * 9.81f;
+          float ay = y * 0.0039f * 9.81f;
+          float az = z * 0.0039f * 9.81f;
+
+          // Raw data collection mode (triggered by button)
+          if (id(collecting_data)) {
+            float mag = sqrt(ax*ax + ay*ay + az*az);
+            ESP_LOGW("DATA", "%.4f,%.4f,%.4f,%.4f", ax, ay, az, mag);
+            id(collect_count)++;
+          }
+
+          // Accumulate Y-axis only
+          id(sum_y) += ay;
+          id(sum_y_sq) += ay * ay;
+          id(sample_count)++;
+
+  # Calculate standard deviation every 500ms
+  - interval: 500ms
+    then:
+      - lambda: |-
+          if (id(sample_count) < 25) return;  // Min 25 samples
+
+          float n = id(sample_count);
+          float mean_y = id(sum_y) / n;
+          float var_y = (id(sum_y_sq) / n) - (mean_y * mean_y);
+          float std = sqrt(var_y);
+
+          // Smoothing (0.5 old + 0.5 new = ~0.5s reaction time)
+          // HA integration applies additional smoothing
+          id(std_y) = id(std_y) * 0.5f + std * 0.5f;
+
+          id(sample_count) = 0;
+          id(sum_y) = 0.0f;
+          id(sum_y_sq) = 0.0f;
+
+sensor:
+  - platform: template
+    name: "Vibration Y-Std"
+    id: vibration_std
+    unit_of_measurement: "m/s²"
+    accuracy_decimals: 4
+    state_class: measurement
+    icon: "mdi:chart-bell-curve"
+    update_interval: 500ms
+    lambda: return id(std_y);
+
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    update_interval: 60s
+
+  - platform: uptime
+    name: "Uptime"
+    update_interval: 60s
+
+binary_sensor:
+  - platform: template
+    name: "Wasser Fliesst"
+    id: wasser_fliesst
+    device_class: running
+    lambda: return id(std_y) > 0.048f;
+    filters:
+      - delayed_on: 2s
+      - delayed_off: 5s
+
+button:
+  - platform: restart
+    name: "ESP Restart"
+    icon: "mdi:restart"
+
+  - platform: template
+    name: "Collect Data (10s)"
+    icon: "mdi:database-export"
+    on_press:
+      - lambda: |-
+          id(collecting_data) = true;
+          id(collect_count) = 0;
+          ESP_LOGW("DATA", "===== START =====");
+          ESP_LOGW("DATA", "X,Y,Z,Mag");
+      - delay: 10s
+      - lambda: |-
+          id(collecting_data) = false;
+          ESP_LOGW("DATA", "===== END (%d samples) =====", id(collect_count));
