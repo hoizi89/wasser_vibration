@@ -47,28 +47,37 @@ Mount the ADXL345 firmly on the water pipe using zip ties, hose clamps, or adhes
 
 ## ESPHome Firmware
 
-Flash the ESP32 with the provided ESPHome configuration:
+### Option A: ESPHome Dashboard (recommended)
 
+If you already have the [ESPHome Dashboard](https://esphome.io/guides/getting_started_hassio.html) add-on in Home Assistant:
+
+1. Copy `esphome/wasser_vibration.yaml` into your ESPHome config directory
+2. Create/edit `secrets.yaml` in the same directory:
+   ```yaml
+   wifi_ssid: "YourWiFiSSID"
+   wifi_password: "YourWiFiPassword"
+   api_encryption_key: "generate-a-key-with-esphome"
+   ota_password: "generate-a-password"
+   ```
+3. In the ESPHome Dashboard, click the three dots on the device and select "Install"
+4. For the first flash, connect the ESP32 via USB and choose "Plug into this computer"
+5. Subsequent updates can be flashed wirelessly (OTA)
+
+### Option B: Command Line
+
+```bash
+pip install esphome
+esphome run esphome/wasser_vibration.yaml
 ```
-esphome/wasser_vibration.yaml
-```
 
-Before flashing, create a `secrets.yaml` in your ESPHome config directory with:
+### What the Firmware Does
 
-```yaml
-wifi_ssid: "YourWiFiSSID"
-wifi_password: "YourWiFiPassword"
-api_encryption_key: "generate-a-key-with-esphome"
-ota_password: "generate-a-password"
-```
-
-The firmware:
 - Reads ADXL345 via raw I2C at ~100 Hz (10 ms interval)
 - Calculates Y-axis standard deviation over 500 ms windows
-- Exposes `Vibration Y-Std` sensor to Home Assistant via ESPHome API
-- Includes a basic binary `Wasser Fliesst` sensor (threshold-based)
+- Exposes `Vibration Y-Std` sensor to Home Assistant via ESPHome native API
+- Includes a basic binary `Wasser Fliesst` sensor (threshold-based with delayed on/off)
 - Has a web server on port 80 for monitoring/debugging
-- Includes a "Collect Data" button for 10s raw data capture (useful for calibration)
+- Includes a "Collect Data" button that captures 10s of raw accelerometer data to the log (useful for initial calibration)
 
 ## Installation (HACS)
 
